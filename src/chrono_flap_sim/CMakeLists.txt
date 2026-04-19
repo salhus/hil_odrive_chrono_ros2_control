@@ -9,6 +9,15 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Workaround: GCC 13 has a broken std::format implementation that causes
+# compile errors when <format> is transitively included in C++20 mode.
+# Setting __cpp_lib_format=0 prevents the broken codepaths from being
+# instantiated. Neither Chrono nor this node uses std::format directly.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "14")
+  add_compile_definitions(__cpp_lib_format=0)
+  message(STATUS "chrono_flap_sim: GCC <14 detected, disabling std::format to work around bug")
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -25,9 +34,7 @@ if(Chrono_VSG_AVAILABLE)
     list(APPEND LIBS ${CHRONO_VSG_LIB})
 
     # Find VSG include dir from CMAKE_PREFIX_PATH.
-    # We intentionally do NOT link vsg::vsg because the imported target adds
-    # compile definitions that trigger a GCC 13 <format> template bug.
-    # Instead we just need the include path for vsg/all.h.
+    # Do NOT link vsg::vsg imported target - it may re-enable format definitions.
     set(_VSG_INCLUDE_DIR "")
     foreach(_prefix ${CMAKE_PREFIX_PATH})
       if(EXISTS "${_prefix}/include/vsg/all.h")
@@ -40,11 +47,10 @@ if(Chrono_VSG_AVAILABLE)
       message(STATUS "chrono_flap_sim: Found VSG headers at ${_VSG_INCLUDE_DIR}")
       set(VSG_EXTRA_INCLUDES ${_VSG_INCLUDE_DIR})
     else()
-      message(WARNING "chrono_flap_sim: Chrono_vsg found but vsg/all.h not found. "
-        "Set CMAKE_PREFIX_PATH to the vsg install prefix.")
+      message(WARNING "chrono_flap_sim: Chrono_vsg found but vsg/all.h not found. 
+        Set CMAKE_PREFIX_PATH to the vsg install prefix.")
     endif()
 
-    # Link vsgXchange/vsgImGui libs (but not the imported targets)
     find_library(_VSGXCHANGE_LIB vsgXchange HINTS /usr/local/lib)
     if(_VSGXCHANGE_LIB)
       list(APPEND LIBS ${_VSGXCHANGE_LIB})
