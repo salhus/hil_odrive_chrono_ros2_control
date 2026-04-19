@@ -13,14 +13,14 @@
     </visual>
   </link>
 
-  <!-- 30cm wide x 0.25cm thick x 30cm tall acrylic flap (width x thickness x height) -->
+  <!-- 0.25cm thick x 30cm wide x 30cm tall acrylic flap (thickness x width x height) -->
   <!-- CoM is at z=0.15 (half of 0.30m height) above the joint origin -->
   <link name="motor_link">
     <visual>
       <origin xyz="0 0 0.15" rpy="0 0 0"/>
       <geometry>
-        <!-- size: x=0.30m (width), y=0.0025m (thickness), z=0.30m (height) -->
-        <box size="0.30 0.0025 0.30"/>
+        <!-- size: x=0.0025m (thickness), y=0.30m (width along rotation axis), z=0.30m (height) -->
+        <box size="0.0025 0.30 0.30"/>
       </geometry>
       <material name="acrylic_blue">
         <color rgba="0.4 0.7 1.0 0.7"/>
