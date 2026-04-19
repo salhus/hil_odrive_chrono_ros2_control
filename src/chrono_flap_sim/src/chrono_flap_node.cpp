@@ -1,35 +1,35 @@
 // chrono_flap_node.cpp
-//
+
 // ChronoFlapNode — ROS 2 node that runs a Project Chrono multibody simulation of a motor
-// driving a rigid flap about a revolute joint.
-//
+driving a rigid flap about a revolute joint.
+
 // The node subscribes to the same effort/torque topic that the velocity_pid_node publishes to
 // (`/motor_effort_controller/commands`, Float64MultiArray), extracts the first element as the
 // applied torque, and steps a Chrono simulation at a configurable rate.  The resulting joint
 // angle, angular velocity, and angular acceleration are published as Float64 topics under `~/`
 // so they appear alongside the existing velocity_pid_node topics in PlotJuggler.
-//
+
 // Simulation model
-// ─────────────────
-//   • Ground body (fixed).
-//   • Flap body: rigid bar of length L and mass m, approximated as a thin rod.
-//     Inertia about one end: Ixx = Iyy = (1/3)·m·L², Izz ≈ 0 (thin rod).
-//   • ChLinkMotorRotationTorque connecting flap to ground at the root end.
+// -----------------
+//   - Ground body (fixed).
+//   - Flap body: rigid bar of length L and mass m, approximated as a thin rod.
+//     Inertia about one end: Ixx = Iyy = (1/3)*m*L^2, Izz ~ 0 (thin rod).
+//   - ChLinkMotorRotationTorque connecting flap to ground at the root end.
 //     A ChFunctionSetpoint is used to feed the current commanded torque on each timestep.
-//   • Optional revolute joint damping applied as an external torque each tick.
-//
+//   - Optional revolute joint damping applied as an external torque each tick.
+
 // Runtime parameter reconfiguration
-// ───────────────────────────────────
-//   • flap_length_m, flap_mass_kg, joint_damping — reconfigurable at runtime via
+// -----------------------------------
+//   - flap_length_m, flap_mass_kg, joint_damping -- reconfigurable at runtime via
 //     rqt_reconfigure.  Changing flap_length_m or flap_mass_kg updates the Chrono body
 //     (mass, inertia, CoM) in-place and resets flap state to the home position.
-//   • rate_hz, effort_topic — immutable; require node restart.
-//
+//   - rate_hz, effort_topic -- immutable; require node restart.
+
 // Visualization
-// ─────────────
-//   Conditional 3D visualization via Chrono VSG (preferred) or Irrlicht (fallback):
-//     - Build with -DCHRONO_VSG or -DCHRONO_IRRLICHT to enable.
-//     - A box shape represents the flap; a cube marks the pivot on the ground body.
+// -------------
+//   Conditional 3D visualization via Chrono VSG (preferred) or Irrlicht (fallback).
+//   Uses a manual simulation loop (not rclcpp::spin) to avoid segfaults from calling
+//   VSG render functions inside ROS timer callbacks.
 
 #include <chrono>
 #include <cmath>
@@ -48,9 +48,10 @@
 #include "chrono/physics/ChLinkMotorRotationTorque.h"
 #include "chrono/functions/ChFunctionSetpoint.h"
 #include "chrono/assets/ChVisualShapeBox.h"
+#include "chrono/core/ChRealtimeStep.h"
 #include "chrono/ChConfig.h"
 
-// Visualization (optional — conditional compilation)
+// Visualization (optional -- conditional compilation)
 #if defined(CHRONO_VSG)
 #  include "chrono_vsg/ChVisualSystemVSG.h"
    using namespace chrono::vsg3d;
@@ -61,10 +62,10 @@
 
 using namespace chrono;
 
-// ── Visual shape constants ───────────────────────────────────────────────────────────────────────
-static constexpr double kFlapVisHeight   = 0.02;  // flap box height (m) — thin bar cross-section
-static constexpr double kFlapVisDepth    = 0.01;  // flap box depth  (m)
-static constexpr double kPivotMarkerSize = 0.04;  // ground pivot cube side length (m)
+// Visual shape constants
+static constexpr double kFlapVisHeight   = 0.02;
+static constexpr double kFlapVisDepth    = 0.01;
+static constexpr double kPivotMarkerSize = 0.04;
 
 class ChronoFlapNode : public rclcpp::Node
 {
@@ -76,7 +77,7 @@ public:
     sim_velocity_(0.0),
     sim_acceleration_(0.0)
   {
-    // ── Parameters ────────────────────────────────────────────────────────────────────────────
+    // Parameters
     this->declare_parameter<double>("rate_hz", 100.0);
     this->declare_parameter<double>("flap_length_m", 0.3);
     this->declare_parameter<double>("flap_mass_kg", 0.05);
@@ -91,13 +92,10 @@ public:
 
     dt_ = (rate_hz_ > 0.0) ? (1.0 / rate_hz_) : 0.01;
 
-    // ── Build Chrono system ───────────────────────────────────────────────────────────────────
+    // Build Chrono system
     build_chrono_system();
 
-    // ── Visualization ─────────────────────────────────────────────────────────────────────────
-    init_visualization();
-
-    // ── ROS interfaces ────────────────────────────────────────────────────────────────────────
+    // ROS interfaces
     effort_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
       effort_topic_,
       rclcpp::SensorDataQoS(),
@@ -111,14 +109,7 @@ public:
     vel_pub_   = this->create_publisher<std_msgs::msg::Float64>("~/sim_velocity",     10);
     accel_pub_ = this->create_publisher<std_msgs::msg::Float64>("~/sim_acceleration", 10);
 
-    // ── Simulation timer ──────────────────────────────────────────────────────────────────────
-    using namespace std::chrono_literals;
-    const auto period_ns = static_cast<int64_t>(dt_ * 1e9);
-    timer_ = this->create_wall_timer(
-      std::chrono::nanoseconds(period_ns),
-      std::bind(&ChronoFlapNode::simulation_step, this));
-
-    // ── Parameter callbacks ───────────────────────────────────────────────────────────────────
+    // Parameter callbacks
     on_set_handle_ = this->add_on_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter> & params) {
         return on_validate_parameters(params);
@@ -134,51 +125,84 @@ public:
       rate_hz_, dt_, flap_length_, flap_mass_, joint_damping_);
   }
 
-  ~ChronoFlapNode()
+  // Run the simulation loop (called from main, NOT from rclcpp::spin).
+  // This mirrors the pattern used by Chrono's own ROS demos (e.g. demo_ROS_hydraulic_crane).
+  void run()
   {
-    if (timer_) {
-      timer_->cancel();
+    // Initialize visualization here (must be on the main thread)
+    init_visualization();
+
+    ChRealtimeStepTimer realtime_timer;
+
+    while (rclcpp::ok()) {
+      // Process ROS callbacks (subscriptions, parameter changes)
+      rclcpp::spin_some(this->shared_from_this());
+
+      // Render
+#if defined(CHRONO_VSG) || defined(CHRONO_IRRLICHT)
+      if (vis_) {
+        if (!vis_->Run())
+          break;
+        vis_->BeginScene();
+        vis_->Render();
+        vis_->EndScene();
+      }
+#endif
+
+      // Apply damping as an opposing torque added to the commanded torque
+      const double damped_torque = latest_torque_ - joint_damping_ * sim_velocity_;
+      torque_fn_->SetSetpoint(damped_torque, sys_->GetChTime());
+
+      // Cache velocity before the step to compute acceleration
+      const double vel_before = sim_velocity_;
+
+      sys_->DoStepDynamics(dt_);
+
+      // Read back kinematics from the motor link
+      sim_position_ = motor_link_->GetMotorAngle();
+      sim_velocity_ = motor_link_->GetMotorAngleDt();
+      sim_acceleration_ = (sim_velocity_ - vel_before) / dt_;
+
+      publish_kinematics();
+
+      // Throttle to real time
+      realtime_timer.Spin(dt_);
     }
   }
 
 private:
-  // ── Chrono system setup ─────────────────────────────────────────────────────────────────────
-
+  // Chrono system setup
   void build_chrono_system()
   {
     sys_ = std::make_unique<ChSystemNSC>();
     sys_->SetGravitationalAcceleration(ChVector3d(0, 0, -9.81));
 
-    // Ground body (fixed) — small cube marks the pivot in the 3D view
+    // Ground body (fixed)
     ground_ = std::make_shared<ChBody>();
     ground_->SetFixed(true);
     ground_->AddVisualShape(std::make_shared<ChVisualShapeBox>(
       kPivotMarkerSize, kPivotMarkerSize, kPivotMarkerSize));
     sys_->AddBody(ground_);
 
-    // Flap body — thin rigid bar; pivot at origin, tip at (flap_length_, 0, 0)
-    // CoM at mid-length: (flap_length_/2, 0, 0) relative to pivot
+    // Flap body
     flap_ = std::make_shared<ChBody>();
     update_flap_inertia();
 
-    // Visual: thin rectangular bar representing the flap (length × height × depth)
     flap_vis_shape_ = std::make_shared<ChVisualShapeBox>(flap_length_, kFlapVisHeight, kFlapVisDepth);
     flap_->AddVisualShape(flap_vis_shape_);
     sys_->AddBody(flap_);
 
-    // Motor link: ChLinkMotorRotationTorque at world origin, rotation about Z axis
+    // Motor link
     motor_link_ = std::make_shared<ChLinkMotorRotationTorque>();
     torque_fn_  = std::make_shared<ChFunctionSetpoint>();
     motor_link_->SetTorqueFunction(torque_fn_);
 
-    // Frame at the pivot (world origin), Z = rotation axis
     ChFrame<> pivot_frame(ChVector3d(0, 0, 0), QuatFromAngleX(0));
     motor_link_->Initialize(flap_, ground_, pivot_frame);
     sys_->AddLink(motor_link_);
   }
 
-  // ── Visualization setup ─────────────────────────────────────────────────────────────────────
-
+  // Visualization setup
   void init_visualization()
   {
 #if defined(CHRONO_VSG)
@@ -206,28 +230,23 @@ private:
 #endif
   }
 
-  // ── Flap body inertia/CoM update (called at startup and on parameter change) ────────────────
-
+  // Flap body inertia/CoM update
   void update_flap_inertia()
   {
     flap_->SetMass(flap_mass_);
     const double L      = flap_length_;
     const double m      = flap_mass_;
     const double I_perp = (1.0 / 3.0) * m * L * L;
-    // Iz (spin axis) is negligible for a thin rod; use a small positive value.
     flap_->SetInertiaXX(ChVector3d(I_perp, I_perp, 1e-6 * I_perp));
-    // Place CoM at (L/2, 0, 0) so the pivot end is at world origin; reset motion state.
     flap_->SetPos(ChVector3d(L / 2.0, 0.0, 0.0));
     flap_->SetPosDt(ChVector3d(0.0, 0.0, 0.0));
     flap_->SetAngVelParent(ChVector3d(0.0, 0.0, 0.0));
   }
 
-  // ── Immutable parameters ─────────────────────────────────────────────────────────────────────
-
+  // Immutable parameters
   static inline const std::set<std::string> kImmutableParams = {"rate_hz", "effort_topic"};
 
-  // ── Parameter validation ─────────────────────────────────────────────────────────────────────
-
+  // Parameter validation
   rcl_interfaces::msg::SetParametersResult on_validate_parameters(
     const std::vector<rclcpp::Parameter> & parameters)
   {
@@ -266,8 +285,7 @@ private:
     return result;
   }
 
-  // ── Parameter apply ─────────────────────────────────────────────────────────────────────────
-
+  // Parameter apply
   void on_apply_parameters(const std::vector<rclcpp::Parameter> & parameters)
   {
     bool body_needs_update = false;
@@ -289,7 +307,6 @@ private:
 
     if (body_needs_update) {
       update_flap_inertia();
-      // Re-create flap visual shape to match the new length.
       if (flap_->GetVisualModel()) {
         flap_->GetVisualModel()->Clear();
       }
@@ -298,50 +315,12 @@ private:
       flap_->AddVisualShape(flap_vis_shape_);
       RCLCPP_INFO(
         this->get_logger(),
-        "Flap body updated: length=%.4f m, mass=%.4f kg — state reset to home position.",
+        "Flap body updated: length=%.4f m, mass=%.4f kg -- state reset to home position.",
         flap_length_, flap_mass_);
     }
   }
 
-  // ── Timer callback ─────────────────────────────────────────────────────────────────────────
-
-  void simulation_step()
-  {
-#if defined(CHRONO_VSG) || defined(CHRONO_IRRLICHT)
-    if (vis_) {
-      if (!vis_->Run()) {
-        rclcpp::shutdown();
-        return;
-      }
-      vis_->BeginScene();
-      vis_->Render();
-      vis_->EndScene();
-    }
-#endif
-
-    // Apply damping as an opposing torque added to the commanded torque
-    const double damped_torque = latest_torque_ - joint_damping_ * sim_velocity_;
-    torque_fn_->SetSetpoint(damped_torque, sys_->GetChTime());
-
-    // Cache velocity before the step to compute acceleration
-    const double vel_before = sim_velocity_;
-
-    sys_->DoStepDynamics(dt_);
-
-    // Read back kinematics from the flap body
-    // The motor angle / angular velocity are available from the motor link.
-    sim_position_ = motor_link_->GetMotorAngle();
-    sim_velocity_ = motor_link_->GetMotorAngleDt();
-
-    // Finite-difference acceleration (Chrono exposes GetMotorAngleDt2() on some versions;
-    // fall back to finite difference if unavailable)
-    sim_acceleration_ = (sim_velocity_ - vel_before) / dt_;
-
-    publish_kinematics();
-  }
-
-  // ── Publish ────────────────────────────────────────────────────────────────────────────────
-
+  // Publish kinematics
   void publish_kinematics()
   {
     std_msgs::msg::Float64 pos_msg, vel_msg, accel_msg;
@@ -352,8 +331,6 @@ private:
     vel_pub_->publish(vel_msg);
     accel_pub_->publish(accel_msg);
   }
-
-  // ── Member variables ───────────────────────────────────────────────────────────────────────
 
   // Parameters
   double      rate_hz_{100.0};
@@ -375,9 +352,9 @@ private:
   std::shared_ptr<ChBody>                        flap_;
   std::shared_ptr<ChLinkMotorRotationTorque>     motor_link_;
   std::shared_ptr<ChFunctionSetpoint>            torque_fn_;
-  std::shared_ptr<ChVisualShapeBox>              flap_vis_shape_;  // updated on flap_length_ change
+  std::shared_ptr<ChVisualShapeBox>              flap_vis_shape_;
 
-  // Visualization (populated only when a vis backend is compiled in)
+  // Visualization
 #if defined(CHRONO_VSG) || defined(CHRONO_IRRLICHT)
   std::shared_ptr<ChVisualSystem>                vis_;
 #endif
@@ -389,7 +366,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr              accel_pub_;
   rclcpp::TimerBase::SharedPtr                                      timer_;
 
-  // Parameter callback handles (must outlive the node)
+  // Parameter callback handles
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr   on_set_handle_;
   rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr post_set_handle_;
 };
@@ -397,7 +374,8 @@ private:
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ChronoFlapNode>());
+  auto node = std::make_shared<ChronoFlapNode>();
+  node->run();
   rclcpp::shutdown();
   return 0;
 }
