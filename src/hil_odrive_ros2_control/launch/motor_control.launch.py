@@ -6,7 +6,6 @@ from launch.substitutions import FindExecutable
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
 
-
 def generate_launch_description():
     declared_arguments = []
 
@@ -20,7 +19,16 @@ def generate_launch_description():
         )
     )
 
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "enable_visualization",
+            default_value="false",
+            description="Enable Chrono 3D visualization (requires working Vulkan/GPU).",
+        )
+    )
+
     controllers_file = LaunchConfiguration("controllers_file")
+    enable_visualization = LaunchConfiguration("enable_visualization")
 
     robot_description_content = Command(
         [
@@ -72,6 +80,7 @@ def generate_launch_description():
         package="chrono_flap_sim",
         executable="chrono_flap_node",
         name="chrono_flap_node",
+        parameters=[{"enable_visualization": enable_visualization}],
         output="both",
     )
 
