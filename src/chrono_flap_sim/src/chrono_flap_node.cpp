@@ -30,7 +30,7 @@
 
 // Project Chrono headers
 #include "chrono/physics/ChSystemNSC.h"
-#include "chrono/physics/ChBodyEasy.h"
+#include "chrono/physics/ChBody.h"
 #include "chrono/physics/ChLinkMotorRotationTorque.h"
 #include "chrono/functions/ChFunctionSetpoint.h"
 
