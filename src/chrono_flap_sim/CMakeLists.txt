@@ -28,7 +28,9 @@ find_package(Chrono REQUIRED)
 # Collect libraries
 list(APPEND LIBS Chrono_core)
 
-set(CHRONO_VIS_BACKEND "auto" CACHE STRING "Visualization backend: auto, vsg, irrlicht, none")
+set(CHRONO_VIS_BACKEND "auto" CACHE STRING
+  "Visualization backend: auto (VSG only), vsg, none. \
+Use irrlicht only if you have a C++17-compatible build; Irrlicht 1.8 is incompatible with C++20.")
 string(TOLOWER "${CHRONO_VIS_BACKEND}" _vis_backend)
 message(STATUS "chrono_flap_sim: CHRONO_VIS_BACKEND = ${_vis_backend}")
 
@@ -67,20 +69,13 @@ elseif(_vis_backend STREQUAL "vsg" OR (_vis_backend STREQUAL "auto" AND Chrono_V
         list(APPEND LIBS ${_VSGXCHANGE_LIB})
       endif()
     else()
-      message(STATUS "chrono_flap_sim: Chrono_VSG_AVAILABLE but library not found")
-      if(_vis_backend STREQUAL "auto" AND Chrono_IRRLICHT_AVAILABLE)
-        find_library(CHRONO_IRRLICHT_LIB Chrono_irrlicht HINTS /usr/local/lib)
-        if(CHRONO_IRRLICHT_LIB)
-          message(STATUS "chrono_flap_sim: Falling back to Chrono_irrlicht at ${CHRONO_IRRLICHT_LIB}")
-          list(APPEND LIBS ${CHRONO_IRRLICHT_LIB})
-          set(_use_irrlicht TRUE)
-        endif()
-      endif()
+      message(STATUS "chrono_flap_sim: Chrono_VSG_AVAILABLE but Chrono_vsg library not found - running headless")
     endif()
   else()
     message(WARNING "chrono_flap_sim: CHRONO_VIS_BACKEND=vsg requested but Chrono_VSG_AVAILABLE is false - running headless")
   endif()
-elseif(_vis_backend STREQUAL "irrlicht" OR (_vis_backend STREQUAL "auto" AND Chrono_IRRLICHT_AVAILABLE))
+elseif(_vis_backend STREQUAL "irrlicht")
+  # NOTE: Irrlicht 1.8 is incompatible with C++20. Only use this if you have a C++17 build.
   if(Chrono_IRRLICHT_AVAILABLE)
     find_library(CHRONO_IRRLICHT_LIB Chrono_irrlicht HINTS /usr/local/lib)
     if(CHRONO_IRRLICHT_LIB)
