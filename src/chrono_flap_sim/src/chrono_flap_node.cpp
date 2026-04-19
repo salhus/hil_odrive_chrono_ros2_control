@@ -1,7 +1,13 @@
 // chrono_flap_node.cpp
 
-// ChronoFlapNode - ROS 2 node running a Project Chrono simulation of a motor-driven flap.
-// Uses a manual simulation loop so VSG rendering happens on the main thread.
+// ChronoFlapNode — Project Chrono inverted-pendulum flap simulation with two modes:
+//
+//   sim_mode = "sil"      Software-in-the-Loop: Chrono publishes /joint_states so the
+//                         velocity_pid_node closes the loop through the sim. No hardware.
+//
+//   sim_mode = "parallel" Parallel/shadow: Chrono reads the same torque the real ODrive
+//                         receives but does NOT publish /joint_states. The real hardware
+//                         owns the control loop. Compare sim vs real in PlotJuggler.
 //
 // Physical setup:
 //   - 30 cm × 30 cm × 0.25 cm acrylic flap (~0.27 kg)
@@ -10,17 +16,9 @@
 //   - Unpowered ODrive on the other end (passive bearing with cogging/friction)
 //   - θ = 0 is upright; gravity destabilises the flap
 //
-// The revolute joint axis is Y, so the flap swings in the XZ plane under gravity.
+// Torque law each sub-step:
+//   τ_total = τ_external − (B_joint + B_bearing)·ω − K·θ
 //
-// The publish rate (rate_hz, default 100 Hz) matches the hardware control loop.
-// The solver runs at solver_rate_hz (default 1000 Hz) internally for numerical stability,
-// taking multiple sub-steps per publish tick.
-//
-// The torque applied each sub-step is:
-//   τ_total = τ_external - B_joint·ω - B_bearing·ω - K·θ
-// where B_joint = joint_damping (powered ODrive friction),
-//       B_bearing = bearing_friction (unpowered ODrive cogging/friction),
-//       K = joint_stiffness, θ = motor angle, ω = motor angular velocity.
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -31,6 +29,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 // Project Chrono headers
 #include "chrono/physics/ChSystemNSC.h"
 #include "chrono/physics/ChBody.h"
@@ -61,6 +60,9 @@ public:
     sim_acceleration_(0.0)
   {
     // --- Declare parameters ---
+    // Mode
+    this->declare_parameter<std::string>("sim_mode", "sil");
+    this->declare_parameter<std::string>("joint_name", "motor_joint");
     // Timing
     this->declare_parameter<double>("rate_hz", 100.0);
     this->declare_parameter<double>("solver_rate_hz", 1000.0);
@@ -75,7 +77,10 @@ public:
     // ROS interface
     this->declare_parameter<std::string>("effort_topic", "/motor_effort_controller/commands");
     this->declare_parameter<bool>("enable_visualization", false);
+
     // --- Read parameters ---
+    sim_mode_          = this->get_parameter("sim_mode").as_string();
+    joint_name_        = this->get_parameter("joint_name").as_string();
     rate_hz_           = this->get_parameter("rate_hz").as_double();
     solver_rate_hz_    = this->get_parameter("solver_rate_hz").as_double();
     flap_length_       = this->get_parameter("flap_length_m").as_double();
@@ -86,13 +91,25 @@ public:
     bearing_friction_  = this->get_parameter("bearing_friction").as_double();
     effort_topic_      = this->get_parameter("effort_topic").as_string();
     enable_vis_        = this->get_parameter("enable_visualization").as_bool();
+
+    // Validate sim_mode
+    if (sim_mode_ != "sil" && sim_mode_ != "parallel") {
+      RCLCPP_WARN(this->get_logger(),
+        "Invalid sim_mode '%s'; falling back to 'sil'.", sim_mode_.c_str());
+      sim_mode_ = "sil";
+    }
+    sil_mode_ = (sim_mode_ == "sil");
+
     // Publish interval (wall-clock pacing)
     publish_dt_ = (rate_hz_ > 0.0) ? (1.0 / rate_hz_) : 0.01;
     // Solver timestep (internal sub-stepping)
     solver_dt_ = (solver_rate_hz_ > 0.0) ? (1.0 / solver_rate_hz_) : 0.001;
     // Number of solver sub-steps per publish tick (at least 1)
     substeps_ = std::max(1, static_cast<int>(std::round(publish_dt_ / solver_dt_)));
+
     build_chrono_system();
+
+    // --- ROS interfaces ---
     effort_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
       effort_topic_,
       rclcpp::SensorDataQoS(),
@@ -101,9 +118,22 @@ public:
           latest_torque_ = msg->data[0];
         }
       });
+
     pos_pub_   = this->create_publisher<std_msgs::msg::Float64>("~/sim_position",     10);
     vel_pub_   = this->create_publisher<std_msgs::msg::Float64>("~/sim_velocity",     10);
     accel_pub_ = this->create_publisher<std_msgs::msg::Float64>("~/sim_acceleration", 10);
+
+    // In SIL mode, publish JointState so the PID node closes the loop through Chrono
+    if (sil_mode_) {
+      joint_state_pub_ = this->create_publisher<sensor_msgs::msg::JointState>(
+        "/joint_states", 10);
+      RCLCPP_INFO(this->get_logger(), "SIL mode: publishing /joint_states (joint='%s")",
+        joint_name_.c_str());
+    } else {
+      RCLCPP_INFO(this->get_logger(), "Parallel mode: NOT publishing /joint_states");
+    }
+
+    // --- Parameter callbacks ---
     on_set_handle_ = this->add_on_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter> & params) {
         return on_validate_parameters(params);
@@ -112,13 +142,16 @@ public:
       [this](const std::vector<rclcpp::Parameter> & params) {
         on_apply_parameters(params);
       });
+
     RCLCPP_INFO(
       this->get_logger(),
-      "ChronoFlapNode started: publish=%.0f Hz, solver=%.0f Hz (%d substeps), "
-      "flap=%.3f×%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f",
-      rate_hz_, solver_rate_hz_, substeps_, flap_length_, flap_width_, flap_mass_,
+      "ChronoFlapNode started [%s]: publish=%.0f Hz, solver=%.0f Hz (%d substeps), "
+      "flap=%.3fx%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f",
+      sim_mode_.c_str(), rate_hz_, solver_rate_hz_, substeps_,
+      flap_length_, flap_width_, flap_mass_,
       joint_damping_, joint_stiffness_, bearing_friction_);
   }
+
   void run()
   {
     if (enable_vis_) {
@@ -161,6 +194,10 @@ public:
       sim_velocity_ = motor_link_->GetMotorAngleDt();
       sim_acceleration_ = (sim_velocity_ - vel_before) / publish_dt_;
       publish_kinematics();
+      // In SIL mode, publish JointState so the PID reads from us
+      if (sil_mode_) {
+        publish_joint_state();
+      }
       auto elapsed = clock::now() - t_start;
       if (elapsed < step_duration) {
         std::this_thread::sleep_for(step_duration - elapsed);
@@ -244,9 +281,7 @@ private:
     const double W = flap_width_;
     const double m = flap_mass_;
     // Moment of inertia of a thin rectangular plate about the bottom edge (pivot):
-    // I_pivot = (1/3)·m·L²  (rotation about the pivot axis = Y)
-    // I_width = (1/12)·m·W² (rotation about the Z axis through CoM)
-    // I_thin  ≈ small       (rotation about X axis, plate is thin)
+    // I_pivot = (1/3)*m*L^2  (rotation about the pivot axis = Y)
     const double I_pivot = (1.0 / 3.0) * m * L * L;
     const double I_width = (1.0 / 12.0) * m * W * W;
     const double I_thin  = 1e-6 * I_pivot;
@@ -254,13 +289,14 @@ private:
     // X = width direction, Y = pivot axis, Z = length direction (up)
     flap_->SetInertiaXX(ChVector3d(I_pivot, I_width, I_thin));
     // Flap extends UPWARD (+Z) from pivot; CoM at L/2 above pivot
-    // θ = 0 is upright (inverted pendulum)
+    // theta = 0 is upright (inverted pendulum)
     flap_->SetPos(ChVector3d(0.0, 0.0, L / 2.0));
     flap_->SetPosDt(ChVector3d(0.0, 0.0, 0.0));
     flap_->SetAngVelParent(ChVector3d(0.0, 0.0, 0.0));
   }
+  // --- Parameter validation & application ---
   static inline const std::set<std::string> kImmutableParams = {
-    "rate_hz", "solver_rate_hz", "effort_topic"};
+    "rate_hz", "solver_rate_hz", "effort_topic", "sim_mode", "joint_name"};
   rcl_interfaces::msg::SetParametersResult on_validate_parameters(
     const std::vector<rclcpp::Parameter> & parameters)
   {
@@ -295,7 +331,7 @@ private:
   {
     bool body_needs_update = false;
     for (const auto & param : parameters) {
-      if (param.get_name() == "flap_length_m")    { flap_length_ = param.as_double(); body_needs_update = true; }
+      if (param.get_name() == "flap_length_m")     { flap_length_ = param.as_double(); body_needs_update = true; }
       else if (param.get_name() == "flap_width_m") { flap_width_ = param.as_double(); body_needs_update = true; }
       else if (param.get_name() == "flap_mass_kg") { flap_mass_ = param.as_double(); body_needs_update = true; }
       else if (param.get_name() == "joint_damping")    { joint_damping_ = param.as_double(); }
@@ -310,6 +346,7 @@ private:
       flap_->AddVisualShape(flap_vis_shape_);
     }
   }
+  // --- Publishing ---
   void publish_kinematics()
   {
     std_msgs::msg::Float64 pos_msg, vel_msg, accel_msg;
@@ -320,6 +357,21 @@ private:
     vel_pub_->publish(vel_msg);
     accel_pub_->publish(accel_msg);
   }
+  void publish_joint_state()
+  {
+    sensor_msgs::msg::JointState js;
+    js.header.stamp = this->now();
+    js.name.push_back(joint_name_);
+    js.position.push_back(sim_position_);
+    js.velocity.push_back(sim_velocity_);
+    js.effort.push_back(latest_torque_);
+    joint_state_pub_->publish(js);
+  }
+  // --- Member variables ---
+  // Mode
+  std::string sim_mode_{"sil"};
+  std::string joint_name_{"motor_joint"};
+  bool        sil_mode_{true};
   // Parameters
   double      rate_hz_{100.0};
   double      solver_rate_hz_{1000.0};
@@ -355,6 +407,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr              pos_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr              vel_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr              accel_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr        joint_state_pub_;
   // Parameter callback handles
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr   on_set_handle_;
   rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr post_set_handle_;
