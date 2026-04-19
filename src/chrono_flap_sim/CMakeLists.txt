@@ -14,20 +14,35 @@ find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Chrono REQUIRED)
 
-# ── Collect visualization libraries ────────────────────────────────────────────
+# ── Collect libraries ──────────────────────────────────────────────────────────
 # chrono/ChConfig.h (included in the .cpp) defines CHRONO_VSG / CHRONO_IRRLICHT
-# based on how Chrono was built.  We mirror the pattern from Chrono's own demo
-# CMakeLists: append Chrono_vsg or Chrono_irrlicht to the LIBS list.
+# based on how Chrono was built.
+#
+# Chrono's CMake config does NOT create imported targets (Chrono_vsg etc.).
+# It populates CHRONO_LIB_NAMES when components are requested.  Since we use
+# a bare find_package(Chrono REQUIRED), we locate the vis libraries manually.
+
 list(APPEND LIBS Chrono_core)
 
-if(CH_ENABLE_MODULE_VSG OR TARGET Chrono_vsg)
-  message(STATUS "chrono_flap_sim: Chrono VSG module available — enabling VSG visualization")
-  list(APPEND LIBS "Chrono_vsg")
-elseif(CH_ENABLE_MODULE_IRRLICHT OR TARGET Chrono_irrlicht)
-  message(STATUS "chrono_flap_sim: Chrono Irrlicht module available — enabling Irrlicht visualization")
-  list(APPEND LIBS "Chrono_irrlicht")
+# Check if Chrono was built with VSG support
+if(Chrono_VSG_AVAILABLE)
+  find_library(CHRONO_VSG_LIB Chrono_vsg HINTS ${CHRONO_LIBRARY_DIRS} /usr/local/lib)
+  if(CHRONO_VSG_LIB)
+    message(STATUS "chrono_flap_sim: Found Chrono_vsg at ${CHRONO_VSG_LIB}")
+    list(APPEND LIBS ${CHRONO_VSG_LIB})
+  else()
+    message(STATUS "chrono_flap_sim: Chrono_VSG_AVAILABLE but library not found — running headless")
+  endif()
+elseif(Chrono_IRRLICHT_AVAILABLE)
+  find_library(CHRONO_IRRLICHT_LIB Chrono_irrlicht HINTS ${CHRONO_LIBRARY_DIRS} /usr/local/lib)
+  if(CHRONO_IRRLICHT_LIB)
+    message(STATUS "chrono_flap_sim: Found Chrono_irrlicht at ${CHRONO_IRRLICHT_LIB}")
+    list(APPEND LIBS ${CHRONO_IRRLICHT_LIB})
+  else()
+    message(STATUS "chrono_flap_sim: Chrono_IRRLICHT_AVAILABLE but library not found — running headless")
+  endif()
 else()
-  message(STATUS "chrono_flap_sim: No Chrono visualization module found — running headless")
+  message(STATUS "chrono_flap_sim: No Chrono visualization module — running headless")
 endif()
 
 add_executable(chrono_flap_node src/chrono_flap_node.cpp)
