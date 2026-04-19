@@ -14,26 +14,17 @@ find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Chrono REQUIRED)
 
-# ── Collect libraries ──────────────────────────────────────────────────────────
-# chrono/ChConfig.h (included in the .cpp) defines CHRONO_VSG / CHRONO_IRRLICHT.
-# Chrono's CMake config does NOT create imported targets for vis modules.
-# We locate the vis libraries manually via find_library().
-
+# Collect libraries
 list(APPEND LIBS Chrono_core)
 
-# Check if Chrono was built with VSG support
 if(Chrono_VSG_AVAILABLE)
-  find_library(CHRONO_VSG_LIB Chrono_vsg HINTS ${CHRONO_LIBRARY_DIRS} /usr/local/lib)
+  find_library(CHRONO_VSG_LIB Chrono_vsg HINTS /usr/local/lib)
   if(CHRONO_VSG_LIB)
     message(STATUS "chrono_flap_sim: Found Chrono_vsg at ${CHRONO_VSG_LIB}")
     list(APPEND LIBS ${CHRONO_VSG_LIB})
 
-    # VSG headers (vsg/all.h) are needed by chrono_vsg headers.
-    # find_package(vsg) needs CMAKE_PREFIX_PATH to point to the vsg install.
-    # ament/colcon may override CMAKE_PREFIX_PATH, so we also scan common paths.
     find_package(vsg QUIET)
     if(NOT vsg_FOUND)
-      # Scan CMAKE_PREFIX_PATH manually for vsg cmake config
       foreach(_prefix ${CMAKE_PREFIX_PATH})
         if(EXISTS "${_prefix}/lib/cmake/vsg/vsgConfig.cmake")
           set(vsg_DIR "${_prefix}/lib/cmake/vsg")
@@ -48,18 +39,15 @@ if(Chrono_VSG_AVAILABLE)
     endif()
 
     if(TARGET vsg::vsg)
-      message(STATUS "chrono_flap_sim: Found vsg::vsg target — linking for VSG include dirs")
+      message(STATUS "chrono_flap_sim: Found vsg::vsg target")
       list(APPEND LIBS vsg::vsg)
     elseif(_VSG_INCLUDE_FALLBACK)
-      message(STATUS "chrono_flap_sim: Using fallback VSG include dir: ${_VSG_INCLUDE_FALLBACK}")
+      message(STATUS "chrono_flap_sim: Using fallback VSG include: ${_VSG_INCLUDE_FALLBACK}")
       set(VSG_EXTRA_INCLUDES ${_VSG_INCLUDE_FALLBACK})
     else()
-      message(WARNING "chrono_flap_sim: Chrono_vsg found but vsg headers not found. "
-        "Set CMAKE_PREFIX_PATH to the vsg install prefix, e.g.:
-        "  colcon build --cmake-args -DCMAKE_PREFIX_PATH=/path/to/vsg")
+      message(WARNING "chrono_flap_sim: Chrono_vsg found but vsg headers not found. Set CMAKE_PREFIX_PATH to the vsg install prefix.")
     endif()
 
-    # Also try vsgXchange and vsgImGui
     find_package(vsgXchange QUIET)
     if(TARGET vsgXchange::vsgXchange)
       list(APPEND LIBS vsgXchange::vsgXchange)
@@ -69,22 +57,22 @@ if(Chrono_VSG_AVAILABLE)
       list(APPEND LIBS vsgImGui::vsgImGui)
     endif()
   else()
-    message(STATUS "chrono_flap_sim: Chrono_VSG_AVAILABLE but library not found — running headless")
+    message(STATUS "chrono_flap_sim: Chrono_VSG_AVAILABLE but library not found")
   endif()
 elseif(Chrono_IRRLICHT_AVAILABLE)
-  find_library(CHRONO_IRRLICHT_LIB Chrono_irrlicht HINTS ${CHRONO_LIBRARY_DIRS} /usr/local/lib)
+  find_library(CHRONO_IRRLICHT_LIB Chrono_irrlicht HINTS /usr/local/lib)
   if(CHRONO_IRRLICHT_LIB)
     message(STATUS "chrono_flap_sim: Found Chrono_irrlicht at ${CHRONO_IRRLICHT_LIB}")
     list(APPEND LIBS ${CHRONO_IRRLICHT_LIB})
   endif()
 else()
-  message(STATUS "chrono_flap_sim: No Chrono visualization module — running headless")
+  message(STATUS "chrono_flap_sim: No visualization module — running headless")
 endif()
 
 add_executable(chrono_flap_node src/chrono_flap_node.cpp)
 
 target_include_directories(chrono_flap_node PRIVATE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CHRONO_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIR}
   ${VSG_EXTRA_INCLUDES}
