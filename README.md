@@ -54,7 +54,7 @@ Optional arguments:
 ```bash
 ros2 launch chrono_flap_sim sil_mode.launch.py \
   bearing_friction:=0.3 \
-  control_mode:=position_only \
+  control_mode:=cascade \
   position_setpoint:=0.8 \
   enable_visualization:=false
 ```
@@ -89,12 +89,12 @@ the Y axis), and orange `pto_link` cylinder.
 
 ```bash
 # Terminal 1 — Chrono simulation (acts as the plant)
-ros2 run chrono_flap_sim chrono_flap_node --ros-args -p sil_mode:=true -p bearing_friction:=0.2
+ros2 run chrono_flap_sim chrono_flap_node --ros-args -p sil_mode:=true -p bearing_friction:=0.4
 
 # Terminal 2 — PID controller
 ros2 run odrive_velocity_pid velocity_pid_node --ros-args \
   -p joint_name:=motor_joint \
-  -p control_mode:=position_only \
+  -p control_mode:=cascade \
   -p position_setpoint:=0.5
 ```
 
@@ -111,7 +111,7 @@ sudo ip link set can0 up type can bitrate 250000
 ros2 launch hil_odrive_ros2_control motor_control.launch.py
 
 # Terminal 3 — Chrono shadow (optional, if not started by launch file)
-ros2 run chrono_flap_sim chrono_flap_node --ros-args -p bearing_friction:=0.2
+ros2 run chrono_flap_sim chrono_flap_node --ros-args -p bearing_friction:=0.4
 ```
 
 ---
@@ -268,7 +268,7 @@ Once configured, power values appear in `/dynamic_joint_states` — no oscillosc
 
 ## Run the velocity PID node (hydro emulator)
 
-The node starts in `position_only` mode with a stationary trajectory (`amplitude = 0`, `omega = 0`).
+The node starts in `cascade` mode with a stationary trajectory (`amplitude = 0`, `omega = 0`).
 Use `--ros-args` to configure it:
 
 ```bash
@@ -291,8 +291,8 @@ Three modes are available via the `control_mode` parameter (runtime-reconfigurab
 
 | Mode | Description |
 |---|---|
-| `position_only` *(default)* | Outer position PID output → torque directly. Good for commissioning. |
-| `cascade` | Outer position PID → velocity command → inner velocity PID → torque. Recommended for full trajectory tracking. |
+| `position_only` | Outer position PID output → torque directly. Good for commissioning. |
+| `cascade` *(default)* | Outer position PID → velocity command → inner velocity PID → torque. Recommended for full trajectory tracking. |
 | `velocity_only` | Single velocity PID loop. Backward-compatible. |
 
 Switch mode at runtime:
@@ -410,7 +410,7 @@ writes directly to the effort controller's command topic.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `control_mode` | `string` | `position_only` | Active mode: `position_only`, `cascade`, or `velocity_only` |
+| `control_mode` | `string` | `cascade` | Active mode: `position_only`, `cascade`, or `velocity_only` |
 | `amplitude_rad_s` | `double` | `0.0` | Sine trajectory amplitude. In `velocity_only`: rad/s. In `cascade`/`position_only`: rad (peak excursion = `A/ω`). `0.0` = stationary. |
 | `omega_rad_s` | `double` | `0.0` | Sine angular frequency (rad/s). For 1 Hz use `2π ≈ 6.283`. `0.0` = stationary. |
 | `position_setpoint` | `double` | `0.0` | Static position setpoint (rad). Sine oscillates around this. |
@@ -478,7 +478,7 @@ These values are used as defaults in `chrono_flap_node` (see `src/chrono_flap_si
 ros2 run chrono_flap_sim chrono_flap_node --ros-args \
   -p flap_mass_kg:=0.5 \
   -p joint_stiffness:=0.712441 \
-  -p bearing_friction:=0.2
+  -p bearing_friction:=0.4
 ```
 
 ---

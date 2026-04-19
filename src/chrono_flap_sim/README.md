@@ -90,7 +90,7 @@ Optional arguments:
 ```bash
 ros2 launch chrono_flap_sim sil_mode.launch.py \
   bearing_friction:=0.3 \
-  control_mode:=position_only \
+  control_mode:=cascade \
   position_setpoint:=0.8 \
   enable_visualization:=false
 ```
@@ -120,13 +120,13 @@ the Y axis with the pivot at the bottom edge), and orange `pto_link` cylinder.
 # Terminal 1 — simulation plant
 ros2 run chrono_flap_sim chrono_flap_node --ros-args \
   -p sil_mode:=true \
-  -p bearing_friction:=0.2 \
+  -p bearing_friction:=0.4 \
   -p joint_stiffness:=0.712441
 
 # Terminal 2 — PID controller
 ros2 run odrive_velocity_pid velocity_pid_node --ros-args \
   -p joint_name:=motor_joint \
-  -p control_mode:=position_only \
+  -p control_mode:=cascade \
   -p position_setpoint:=0.5
 ```
 
@@ -179,7 +179,7 @@ changed at runtime via `ros2 param set` or `rqt_reconfigure`.
 | `flap_mass_kg` | double | `0.5` | ✓ | Flap mass (kg); identified value from parameter ID |
 | `joint_damping` | double | `0.0` | ✓ | Viscous damping at the powered ODrive joint (N·m·s/rad) |
 | `joint_stiffness` | double | `0.712441` | ✓ | Restoring spring stiffness (N·m/rad); identified value from parameter ID |
-| `bearing_friction` | double | `0.005` | ✓ | Bearing friction at the unpowered ODrive (N·m·s/rad); default is a conservative starting value — set to `0.2` for the identified test-bench hardware |
+| `bearing_friction` | double | `0.4` | ✓ | Bearing friction at the unpowered ODrive (N·m·s/rad); identified test-bench value |
 
 > **Identified values:** For the 30 cm × 30 cm acrylic flap on this test bench, the parameter
 > identification results are:
@@ -188,10 +188,10 @@ changed at runtime via `ros2 param set` or `rqt_reconfigure`.
 > |---|---|---|
 > | `flap_mass_kg` | `0.5` | 0.5 kg |
 > | `joint_stiffness` | `0.712441` | 0.712441 N·m/rad |
-> | `bearing_friction` | `0.005` (conservative) | **0.2 N·m·s/rad** |
+> | `bearing_friction` | `0.4` | **0.2 N·m·s/rad** |
 > | `joint_damping` | `0.0` | 0.0 N·m·s/rad |
 >
-> Always pass `bearing_friction:=0.2` explicitly when running on this hardware.
+> Always pass `bearing_friction:=0.4` (the current default) when running on this hardware.
 > See the root [`README.md`](../../README.md#identified-plant-parameters) for the full parameter identification table.
 
 ---

@@ -5,12 +5,12 @@
 // Architecture overview:
 //   Three operating modes are selected by the `control_mode` parameter:
 //
-//   "position_only" (default):
+//   "position_only":
 //     Outer position PID drives the torque directly.  Useful for checking position gains before
 //     enabling the full cascade.  The sine trajectory produces a position reference; the position
 //     PID output is saturated and sent directly as torque.
 //
-//   "cascade" (recommended for full trajectory tracking):
+//   "cascade" (default, recommended for full trajectory tracking):
 //     Outer loop (position PID) → velocity command → inner loop (velocity PID) → torque.
 //     The sine trajectory produces a position reference with analytical velocity/accel derivatives
 //     used as feedforwards at each level.  Proper bandwidth separation greatly improves stability.
@@ -77,7 +77,7 @@ public:
     joint_name_        = this->get_parameter("joint_name").as_string();
 
     // ── control_mode string (runtime-reconfigurable, handled separately) ─────────────────────
-    this->declare_parameter<std::string>("control_mode", "position_only");
+    this->declare_parameter<std::string>("control_mode", "cascade");
     control_mode_ = this->get_parameter("control_mode").as_string();
     if (!is_valid_control_mode(control_mode_)) {
       RCLCPP_WARN(this->get_logger(),

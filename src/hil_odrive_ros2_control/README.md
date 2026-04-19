@@ -367,7 +367,7 @@ source ~/ws/install/setup.bash
 ros2 run odrive_velocity_pid velocity_pid_node
 ```
 
-The node starts in `position_only` mode with trajectory amplitude and frequency set to `0.0`
+The node starts in `cascade` mode with trajectory amplitude and frequency set to `0.0`
 (stationary). Override parameters with `--ros-args -p key:=value`:
 
 ```bash
@@ -387,8 +387,8 @@ ros2 run odrive_velocity_pid velocity_pid_node --ros-args \
 
 | Mode | Description |
 |---|---|
-| `position_only` *(default)* | Outer position PID → torque directly. Good for commissioning. |
-| `cascade` | Outer position PID → velocity command → inner velocity PID → torque. Best for trajectory tracking. |
+| `position_only` | Outer position PID → torque directly. Good for commissioning. |
+| `cascade` *(default)* | Outer position PID → velocity command → inner velocity PID → torque. Best for trajectory tracking. |
 | `velocity_only` | Single velocity PID loop. Backward-compatible flat-PID behaviour. |
 
 Switch mode at runtime:
@@ -412,7 +412,7 @@ ros2 param set /velocity_pid_node control_mode cascade
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `control_mode` | string | `position_only` | Active control mode: `position_only`, `cascade`, or `velocity_only` |
+| `control_mode` | string | `cascade` | Active control mode: `position_only`, `cascade`, or `velocity_only` |
 | `amplitude_rad_s` | double | `0.0` | Sine trajectory amplitude (rad/s in velocity_only; rad in cascade/position_only). `0.0` = stationary. |
 | `omega_rad_s` | double | `0.0` | Sine angular frequency (rad/s). For 1 Hz use `2π ≈ 6.283`. `0.0` = stationary. |
 | `position_setpoint` | double | `0.0` | Static position setpoint (rad). Sine oscillates around this value. |

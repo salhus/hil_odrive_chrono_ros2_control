@@ -34,7 +34,7 @@ This starts `robot_state_publisher`, `chrono_flap_node` (with `sil_mode:=true`),
 ```bash
 ros2 launch chrono_flap_sim sil_mode.launch.py \
   bearing_friction:=0.3 \
-  control_mode:=position_only \
+  control_mode:=cascade \
   position_setpoint:=0.8 \
   enable_visualization:=false
 ```
@@ -45,13 +45,13 @@ ros2 launch chrono_flap_sim sil_mode.launch.py \
 # Terminal 1 — simulation plant
 ros2 run chrono_flap_sim chrono_flap_node --ros-args \
   -p sil_mode:=true \
-  -p bearing_friction:=0.2 \
+  -p bearing_friction:=0.4 \
   -p joint_stiffness:=0.712441
 
 # Terminal 2 — PID controller
 ros2 run odrive_velocity_pid velocity_pid_node --ros-args \
   -p joint_name:=motor_joint \
-  -p control_mode:=position_only \
+  -p control_mode:=cascade \
   -p position_setpoint:=0.5
 ```
 
@@ -94,7 +94,7 @@ source install/setup.bash
 Three modes are selected at startup via the `control_mode` parameter. The mode can also be
 changed **at runtime** via `ros2 param set` or `rqt_reconfigure`.
 
-### `position_only` (default)
+### `position_only`
 
 The outer position PID drives torque directly. Useful for tuning position gains and commissioning
 before enabling the full cascade.
@@ -103,7 +103,7 @@ before enabling the full cascade.
 pos_ref → [position PID] → torque (clamped)
 ```
 
-### `cascade` (recommended for trajectory tracking)
+### `cascade` (default — recommended for trajectory tracking)
 
 Two-loop cascade: outer position PID feeds a velocity command to the inner velocity PID.
 Analytical velocity and acceleration derivatives of the sine trajectory are used as feedforwards
@@ -184,7 +184,7 @@ ros2 run rqt_reconfigure rqt_reconfigure
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `control_mode` | `string` | `position_only` | Active control mode: `position_only`, `cascade`, or `velocity_only`. |
+| `control_mode` | `string` | `cascade` | Active control mode: `position_only`, `cascade`, or `velocity_only`. |
 
 #### Inner loop (velocity PID)
 

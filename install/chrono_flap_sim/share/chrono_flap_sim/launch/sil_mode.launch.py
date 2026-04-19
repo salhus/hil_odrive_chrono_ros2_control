@@ -13,7 +13,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "bearing_friction",
-            default_value="0.2",
+            default_value="0.4",
             description="Bearing friction coefficient for the Chrono simulation.",
         )
     )
@@ -21,7 +21,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "control_mode",
-            default_value="position_only",
+            default_value="cascade",
             description="Control mode for the velocity PID node.",
         )
     )
