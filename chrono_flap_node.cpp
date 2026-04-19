@@ -1,1 +1,0 @@
-      RCLCPP_INFO(this->get_logger(), "SIL mode: publishing /joint_states (joint='%s')",

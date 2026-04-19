@@ -61,8 +61,9 @@ public:
   {
     // --- Declare parameters ---
     // Mode
-    this->declare_parameter<std::string>("sim_mode", "sil");
+    this->declare_parameter<bool>("sil_mode", false);
     this->declare_parameter<std::string>("joint_name", "motor_joint");
+    this->declare_parameter<std::string>("joint_state_topic", "/joint_states");
     // Timing
     this->declare_parameter<double>("rate_hz", 100.0);
     this->declare_parameter<double>("solver_rate_hz", 1000.0);
@@ -79,8 +80,9 @@ public:
     this->declare_parameter<bool>("enable_visualization", false);
 
     // --- Read parameters ---
-    sim_mode_          = this->get_parameter("sim_mode").as_string();
+    sil_mode_          = this->get_parameter("sil_mode").as_bool();
     joint_name_        = this->get_parameter("joint_name").as_string();
+    joint_state_topic_ = this->get_parameter("joint_state_topic").as_string();
     rate_hz_           = this->get_parameter("rate_hz").as_double();
     solver_rate_hz_    = this->get_parameter("solver_rate_hz").as_double();
     flap_length_       = this->get_parameter("flap_length_m").as_double();
@@ -91,14 +93,6 @@ public:
     bearing_friction_  = this->get_parameter("bearing_friction").as_double();
     effort_topic_      = this->get_parameter("effort_topic").as_string();
     enable_vis_        = this->get_parameter("enable_visualization").as_bool();
-
-    // Validate sim_mode
-    if (sim_mode_ != "sil" && sim_mode_ != "parallel") {
-      RCLCPP_WARN(this->get_logger(),
-        "Invalid sim_mode '%s'; falling back to 'sil'.", sim_mode_.c_str());
-      sim_mode_ = "sil";
-    }
-    sil_mode_ = (sim_mode_ == "sil");
 
     // Publish interval (wall-clock pacing)
     publish_dt_ = (rate_hz_ > 0.0) ? (1.0 / rate_hz_) : 0.01;
@@ -126,9 +120,9 @@ public:
     // In SIL mode, publish JointState so the PID node closes the loop through Chrono
     if (sil_mode_) {
       joint_state_pub_ = this->create_publisher<sensor_msgs::msg::JointState>(
-        "/joint_states", 10);
-      RCLCPP_INFO(this->get_logger(), "SIL mode: publishing /joint_states (joint='%s")",
-        joint_name_.c_str());
+        joint_state_topic_, 10);
+      RCLCPP_INFO(this->get_logger(), "SIL mode: publishing %s (joint='%s')",
+        joint_state_topic_.c_str(), joint_name_.c_str());
     } else {
       RCLCPP_INFO(this->get_logger(), "Parallel mode: NOT publishing /joint_states");
     }
@@ -145,9 +139,9 @@ public:
 
     RCLCPP_INFO(
       this->get_logger(),
-      "ChronoFlapNode started [%s]: publish=%.0f Hz, solver=%.0f Hz (%d substeps), "
+      "ChronoFlapNode started [sil_mode=%s]: publish=%.0f Hz, solver=%.0f Hz (%d substeps), "
       "flap=%.3fx%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f",
-      sim_mode_.c_str(), rate_hz_, solver_rate_hz_, substeps_,
+      sil_mode_ ? "true" : "false", rate_hz_, solver_rate_hz_, substeps_,
       flap_length_, flap_width_, flap_mass_,
       joint_damping_, joint_stiffness_, bearing_friction_);
   }
@@ -296,7 +290,7 @@ private:
   }
   // --- Parameter validation & application ---
   static inline const std::set<std::string> kImmutableParams = {
-    "rate_hz", "solver_rate_hz", "effort_topic", "sim_mode", "joint_name"};
+    "rate_hz", "solver_rate_hz", "effort_topic", "sil_mode", "joint_name", "joint_state_topic"};
   rcl_interfaces::msg::SetParametersResult on_validate_parameters(
     const std::vector<rclcpp::Parameter> & parameters)
   {
@@ -369,9 +363,9 @@ private:
   }
   // --- Member variables ---
   // Mode
-  std::string sim_mode_{"sil"};
   std::string joint_name_{"motor_joint"};
-  bool        sil_mode_{true};
+  std::string joint_state_topic_{"/joint_states"};
+  bool        sil_mode_{false};
   // Parameters
   double      rate_hz_{100.0};
   double      solver_rate_hz_{1000.0};
