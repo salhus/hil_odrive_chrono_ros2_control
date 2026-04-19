@@ -22,6 +22,25 @@ When `chrono_flap_node` is launched with `sil_mode:=true`, it publishes `sensor_
 on `/joint_states` at `rate_hz` Hz. The `velocity_pid_node` consumes these messages exactly as it
 would from a real motor — the interface is identical.
 
+The easiest way to start SIL mode is the dedicated launch file:
+
+```bash
+ros2 launch chrono_flap_sim sil_mode.launch.py
+```
+
+This starts `robot_state_publisher`, `chrono_flap_node` (with `sil_mode:=true`), and
+`velocity_pid_node` together. Optional arguments:
+
+```bash
+ros2 launch chrono_flap_sim sil_mode.launch.py \
+  bearing_friction:=0.3 \
+  control_mode:=position_only \
+  position_setpoint:=0.8 \
+  enable_visualization:=false
+```
+
+### Alternative: manual launch (two terminals)
+
 ```bash
 # Terminal 1 — simulation plant
 ros2 run chrono_flap_sim chrono_flap_node --ros-args \

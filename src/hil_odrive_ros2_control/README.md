@@ -110,9 +110,14 @@ Note: `velocity_pid_node` is a standalone node — it is **not** a ros2_control 
 It reads from the joint state broadcaster's output topic and writes directly to the effort
 controller's command topic.
 
-> **SIL alternative:** For development without hardware, run `chrono_flap_node` with
-> `sil_mode:=true`. It will publish `/joint_states` itself and the PID will close the loop
-> through the simulation. See the root [`README.md`](../../README.md#quick-start-sil-mode-no-hardware) for quick-start commands.
+> **SIL alternative:** For development without hardware, use the dedicated launch file:
+> ```bash
+> ros2 launch chrono_flap_sim sil_mode.launch.py
+> ```
+> This starts `robot_state_publisher`, `chrono_flap_node` (with `sil_mode:=true`), and
+> `velocity_pid_node` together — no ODrive, CAN bus, or motor required. See the root
+> [`README.md`](../../README.md#quick-start-sil-mode-no-hardware) for full details and RViz
+> visualization instructions.
 
 ---
 
@@ -246,11 +251,19 @@ cd ..
 # Install dependencies
 rosdep install --from-paths src -y --ignore-src
 
-# Build
+# Build (headless — no Chrono visualization)
 colcon build --symlink-install
 
 # Source overlay
 source install/setup.bash
+```
+
+If Project Chrono was built with VSG (or Irrlicht) visualization support, pass its install
+prefix so CMake can find it:
+
+```bash
+colcon build --symlink-install \
+  --cmake-args -DCMAKE_PREFIX_PATH=/path/to/chrono/install
 ```
 
 ### Confirm packages are discoverable by colcon

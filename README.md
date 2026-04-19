@@ -41,6 +41,52 @@ ODrive HW ──/joint_states──▶ velocity_pid_node ──/motor_effort_con
 
 ## Quick start: SIL mode (no hardware)
 
+The easiest way to start SIL mode is the dedicated launch file, which starts
+`robot_state_publisher`, `chrono_flap_node` (with `sil_mode:=true`), and `velocity_pid_node`
+together:
+
+```bash
+ros2 launch chrono_flap_sim sil_mode.launch.py
+```
+
+Optional arguments:
+
+```bash
+ros2 launch chrono_flap_sim sil_mode.launch.py \
+  bearing_friction:=0.3 \
+  control_mode:=position_only \
+  position_setpoint:=0.8 \
+  enable_visualization:=false
+```
+
+Verify data is flowing:
+
+```bash
+ros2 topic hz /joint_states
+ros2 topic echo /chrono_flap_node/sim_position --once
+```
+
+### RViz visualization (SIL mode)
+
+With the launch file running, open RViz in a second terminal to visualize the robot model:
+
+```bash
+# In a second terminal
+rviz2
+```
+
+In RViz:
+
+1. Set **Fixed Frame** to `base_link`
+2. **Add** → **RobotModel** → set **Description Source** to "Topic" and **Description Topic** to `/robot_description`
+3. **Add** → **TF** (optional, to see frame axes)
+
+The URDF includes visual geometry for all three links: grey `base_link` cube, blue translucent
+`motor_link` flap (0.0025 m thick × 0.30 m wide × 0.30 m tall, swings in the XZ plane about
+the Y axis), and orange `pto_link` cylinder.
+
+### Alternative: manual launch (two terminals)
+
 ```bash
 # Terminal 1 — Chrono simulation (acts as the plant)
 ros2 run chrono_flap_sim chrono_flap_node --ros-args -p sil_mode:=true -p bearing_friction:=0.2
@@ -50,13 +96,6 @@ ros2 run odrive_velocity_pid velocity_pid_node --ros-args \
   -p joint_name:=motor_joint \
   -p control_mode:=position_only \
   -p position_setpoint:=0.5
-```
-
-Verify data is flowing:
-
-```bash
-ros2 topic hz /joint_states
-ros2 topic echo /chrono_flap_node/sim_position --once
 ```
 
 ---
@@ -153,6 +192,14 @@ cd /path/to/hil_odrive_ros2_control   # root of this cloned repository
 rosdep install --from-paths src -y --ignore-src
 colcon build --symlink-install
 source install/setup.bash
+```
+
+If Project Chrono was built with VSG (or Irrlicht) visualization support and is not on the
+system-wide CMake path, pass its install prefix via `CMAKE_PREFIX_PATH`:
+
+```bash
+colcon build --symlink-install \
+  --cmake-args -DCMAKE_PREFIX_PATH=/path/to/chrono/install
 ```
 
 To rebuild a single package after making changes:

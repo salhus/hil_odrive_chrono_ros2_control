@@ -77,6 +77,45 @@ velocity_pid_node ──/motor_effort_controller/commands──▶ chrono_flap_n
 
 **Typical launch:**
 
+The easiest way to start SIL mode is the dedicated launch file, which starts
+`robot_state_publisher`, `chrono_flap_node` (with `sil_mode:=true`), and `velocity_pid_node`
+together:
+
+```bash
+ros2 launch chrono_flap_sim sil_mode.launch.py
+```
+
+Optional arguments:
+
+```bash
+ros2 launch chrono_flap_sim sil_mode.launch.py \
+  bearing_friction:=0.3 \
+  control_mode:=position_only \
+  position_setpoint:=0.8 \
+  enable_visualization:=false
+```
+
+### RViz visualization (SIL mode)
+
+With the launch file running, open RViz in a second terminal to visualize the robot model:
+
+```bash
+# In a second terminal
+rviz2
+```
+
+In RViz:
+
+1. Set **Fixed Frame** to `base_link`
+2. **Add** → **RobotModel** → set **Description Source** to "Topic" and **Description Topic** to `/robot_description`
+3. **Add** → **TF** (optional, to see frame axes)
+
+The URDF includes visual geometry for all three links: grey `base_link` cube, blue translucent
+`motor_link` flap (0.0025 m thick × 0.30 m wide × 0.30 m tall, swings in the XZ plane about
+the Y axis with the pivot at the bottom edge), and orange `pto_link` cylinder.
+
+### Alternative: manual launch (two terminals)
+
 ```bash
 # Terminal 1 — simulation plant
 ros2 run chrono_flap_sim chrono_flap_node --ros-args \
@@ -161,7 +200,7 @@ changed at runtime via `ros2 param set` or `rqt_reconfigure`.
 
 | Topic | Type | Condition | Description |
 |---|---|---|---|
-| `/joint_states` | `sensor_msgs/JointState` | SIL mode only (`sil_mode=true`) | Simulated joint position and velocity; replaces `joint_state_broadcaster` |
+| `/joint_states` | `sensor_msgs/JointState` | SIL mode only (`sil_mode=true`) | Simulated joint position and velocity for both `motor_joint` and `pto_joint` (pto_joint is published with zero position/velocity/effort); replaces `joint_state_broadcaster`, enabling `robot_state_publisher` to compute TFs for all links |
 | `~/sim_position` | `std_msgs/Float64` | Always | Simulated joint angle (rad) |
 | `~/sim_velocity` | `std_msgs/Float64` | Always | Simulated joint angular velocity (rad/s) |
 | `~/sim_acceleration` | `std_msgs/Float64` | Always | Simulated joint angular acceleration (rad/s²) |
@@ -209,7 +248,7 @@ colcon build --packages-select chrono_flap_sim
 
 # With VSG visualization (if Chrono was built with VSG support):
 colcon build --packages-select chrono_flap_sim \
-  --cmake-args -DChronoConfig_DIR=/path/to/chrono/lib/cmake/Chrono
+  --cmake-args -DCMAKE_PREFIX_PATH=/path/to/chrono/install
 ```
 
 `CMakeLists.txt` automatically detects `Chrono_vsg` / `Chrono_irrlicht` targets and adds the
