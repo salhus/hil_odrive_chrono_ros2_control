@@ -17,6 +17,12 @@ find_package(std_msgs REQUIRED)
 #   cmake -DChronoConfig_DIR=/path/to/chrono/lib/cmake/Chrono ..
 find_package(Chrono REQUIRED)
 
+# ── Eigen3 ─────────────────────────────────────────────────────────────────────────────────────
+# Chrono headers internally include "Eigen/Dense". On systems where Eigen is installed under
+# an eigen3/ prefix (e.g. /usr/include/eigen3/Eigen/Dense), CHRONO_INCLUDE_DIRS alone is not
+# sufficient; we must add the Eigen3 include directory explicitly.
+find_package(Eigen3 REQUIRED)
+
 add_executable(chrono_flap_node src/chrono_flap_node.cpp)
 
 target_compile_definitions(chrono_flap_node PRIVATE ${CHRONO_CXX_FLAGS_LIST})
@@ -24,6 +30,7 @@ target_compile_definitions(chrono_flap_node PRIVATE ${CHRONO_CXX_FLAGS_LIST})
 target_include_directories(chrono_flap_node PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   ${CHRONO_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
 )
 
 target_link_libraries(chrono_flap_node
