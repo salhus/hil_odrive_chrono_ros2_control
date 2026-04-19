@@ -2,8 +2,34 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="odrive_wec_dyno">
 
   <!-- Minimal kinematic tree -->
-  <link name="base_link"/>
-  <link name="motor_link"/>
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.04 0.04 0.04"/>
+      </geometry>
+      <material name="dark_grey">
+        <color rgba="0.3 0.3 0.3 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="motor_link">
+    <visual>
+      <origin xyz="0 0 0.15" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.30 0.0025 0.30"/>
+      </geometry>
+      <material name="acrylic_blue">
+        <color rgba="0.4 0.7 1.0 0.7"/>
+      </material>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0.15"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.015" ixy="0" ixz="0" iyy="0.00375" iyz="0" izz="0.000015"/>
+    </inertial>
+  </link>
+
   <joint name="motor_joint" type="continuous">
     <parent link="base_link"/>
     <child link="motor_link"/>
@@ -12,7 +38,17 @@
   </joint>
 
   <!-- PTO motor (axis1) — same shaft as motor_joint, passive linear damper -->
-  <link name="pto_link"/>
+  <link name="pto_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.015" length="0.03"/>
+      </geometry>
+      <material name="orange">
+        <color rgba="1.0 0.5 0.0 1.0"/>
+      </material>
+    </visual>
+  </link>
+
   <joint name="pto_joint" type="continuous">
     <parent link="motor_link"/>
     <child link="pto_link"/>
