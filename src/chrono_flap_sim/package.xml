@@ -15,6 +15,11 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
 
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>hil_odrive_ros2_control</exec_depend>
+  <exec_depend>odrive_velocity_pid</exec_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>
