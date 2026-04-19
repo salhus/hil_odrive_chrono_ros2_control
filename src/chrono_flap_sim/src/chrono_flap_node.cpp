@@ -2,6 +2,9 @@
 //
 // ChronoFlapNode - ROS 2 node running a Project Chrono simulation of a motor-driven flap.
 // Uses a manual simulation loop so VSG rendering happens on the main thread.
+//
+// The revolute joint axis is Y, so the flap swings in the XZ plane under gravity
+// (pendulum behaviour). External torque from the effort controller drives the flap.
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -135,7 +138,9 @@ private:
     motor_link_ = std::make_shared<ChLinkMotorRotationTorque>();
     torque_fn_  = std::make_shared<ChFunctionSetpoint>();
     motor_link_->SetTorqueFunction(torque_fn_);
-    ChFrame<> pivot_frame(ChVector3d(0, 0, 0), QuatFromAngleX(0));
+    // Revolute axis = Y so the flap swings in the XZ plane under gravity.
+    // QuatFromAngleX(CH_PI_2) rotates the default Z motor axis to Y.
+    ChFrame<> pivot_frame(ChVector3d(0, 0, 0), QuatFromAngleX(CH_PI_2));
     motor_link_->Initialize(flap_, ground_, pivot_frame);
     sys_->AddLink(motor_link_);
   }
@@ -147,12 +152,8 @@ private:
       vis->AttachSystem(sys_.get());
       vis->SetWindowTitle("Chrono Flap Simulation");
       vis->SetWindowSize(800, 600);
-      vis->AddCamera(ChVector3d(0.15, -1.5, 0.3), ChVector3d(0.15, 0.0, 0.0));
+      vis->AddCamera(ChVector3d(0.0, -1.5, 0.0), ChVector3d(0.0, 0.0, 0.0));
       vis->Initialize();
-      // Test that the internal viewer was actually created by calling Run()
-      // in a guarded way. If the viewer is null this will segfault, so we
-      // test with a signal-safe check instead: just mark active and let the
-      // first loop iteration catch it if it fails.
       vis_ = vis;
       vis_active_ = true;
       RCLCPP_INFO(this->get_logger(), "VSG visualization initialized.");
@@ -172,7 +173,7 @@ private:
       vis->SetWindowTitle("Chrono Flap Simulation");
       vis->Initialize();
       vis->AddSkyBox();
-      vis->AddCamera(ChVector3d(0.15, -1.5, 0.3), ChVector3d(0.15, 0.0, 0.0));
+      vis->AddCamera(ChVector3d(0.0, -1.5, 0.0), ChVector3d(0.0, 0.0, 0.0));
       vis->AddTypicalLights();
       vis->AttachSystem(sys_.get());
       vis_ = vis;
@@ -195,6 +196,7 @@ private:
     const double m      = flap_mass_;
     const double I_perp = (1.0 / 3.0) * m * L * L;
     flap_->SetInertiaXX(ChVector3d(I_perp, I_perp, 1e-6 * I_perp));
+    // Flap extends along +X from the pivot; CoM at L/2
     flap_->SetPos(ChVector3d(L / 2.0, 0.0, 0.0));
     flap_->SetPosDt(ChVector3d(0.0, 0.0, 0.0));
     flap_->SetAngVelParent(ChVector3d(0.0, 0.0, 0.0));
