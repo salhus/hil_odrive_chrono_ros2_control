@@ -68,6 +68,13 @@ def generate_launch_description():
         output="both",
     )
 
+    chrono_flap_node = Node(
+        package="chrono_flap_sim",
+        executable="chrono_flap_node",
+        name="chrono_flap_node",
+        output="both",
+    )
+
     return LaunchDescription(
         declared_arguments
         + [
@@ -76,5 +83,6 @@ def generate_launch_description():
             joint_state_broadcaster_spawner,
             effort_controller_spawner,
             pto_controller_spawner,
+            chrono_flap_node,
         ]
     )

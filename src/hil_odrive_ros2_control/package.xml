@@ -18,6 +18,9 @@
   <!-- For the hardware plugin -->
   <exec_depend>odrive_ros2_control</exec_depend>
 
+  <!-- Chrono flap simulation node -->
+  <exec_depend>chrono_flap_sim</exec_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>
