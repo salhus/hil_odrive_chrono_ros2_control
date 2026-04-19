@@ -89,17 +89,30 @@ See [`VENDORED.md`](VENDORED.md) for provenance and licensing details.
    - runs a cascaded PID (configurable mode: `position_only`, `cascade`, or `velocity_only`)
    - publishes torque command as `std_msgs/msg/Float64MultiArray` to `/motor_effort_controller/commands`
 
+6. **`chrono_flap_sim/chrono_flap_node`** (included in `motor_control.launch.py`)
+   - runs a Project Chrono inverted-pendulum flap simulation in **parallel/shadow** mode by default
+   - subscribes to `/motor_effort_controller/commands` and integrates the equations of motion
+   - publishes `~/sim_position`, `~/sim_velocity`, `~/sim_acceleration` for model validation
+   - does **not** publish `/joint_states` in parallel mode (the real ODrive owns that topic)
+   - see [`src/chrono_flap_sim/README.md`](../chrono_flap_sim/README.md) for the full physics model and parameter reference
+
 ### Data flow summary
 
 ```
 /joint_states (position + velocity) → velocity_pid_node → /motor_effort_controller/commands (effort) → effort controller → ODrive ros2_control hardware plugin → CAN → ODrive axis0 (motor_joint)
 
 ODrive axis1 (pto_joint) ← passive damping τ = -B·ω configured via odrivetool
+
+/motor_effort_controller/commands → chrono_flap_node (parallel mode) → ~/sim_position, ~/sim_velocity
 ```
 
 Note: `velocity_pid_node` is a standalone node — it is **not** a ros2_control controller plugin.
 It reads from the joint state broadcaster's output topic and writes directly to the effort
 controller's command topic.
+
+> **SIL alternative:** For development without hardware, run `chrono_flap_node` with
+> `sil_mode:=true`. It will publish `/joint_states` itself and the PID will close the loop
+> through the simulation. See the root [`README.md`](../../README.md#quick-start-sil-mode-no-hardware) for quick-start commands.
 
 ---
 
@@ -247,6 +260,7 @@ colcon list
 
 You should see packages like:
 - `hil_odrive_ros2_control`
+- `chrono_flap_sim`
 - `odrive_velocity_pid`
 - `odrive_ros2_control`
 - `odrive_base`
@@ -264,13 +278,28 @@ source ~/ws/install/setup.bash
 ros2 launch hil_odrive_ros2_control motor_control.launch.py
 ```
 
-This launch file should:
-- start `ros2_control_node`
-- start `robot_state_publisher`
-- spawn/activate:
+This launch file starts:
+- `ros2_control_node`
+- `robot_state_publisher`
+- spawns/activates:
   - `joint_state_broadcaster`
   - `motor_effort_controller` (Motor 1, hydro emulator)
   - `pto_effort_controller` (Motor 2, PTO — spawned but passively controlled by ODrive in Phase 1)
+- `velocity_pid_node` (cascade mode, `amplitude_rad_s=0.25`, `omega_rad_s=0.25`)
+- `chrono_flap_node` (parallel/shadow mode by default)
+
+### Launch arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `controllers_file` | `config/controllers.yaml` | Path to controller YAML |
+| `enable_visualization` | `false` | Enable Chrono 3D visualization window (requires Vulkan/GPU and a Chrono build with VSG or Irrlicht) |
+
+To enable the Chrono 3D visualization window:
+
+```bash
+ros2 launch hil_odrive_ros2_control motor_control.launch.py enable_visualization:=true
+```
 
 ---
 

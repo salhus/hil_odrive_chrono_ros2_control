@@ -5,6 +5,76 @@ A self-contained **ROS 2 Jazzy** workspace implementing a **Wave Energy Converte
 **Motor 1 (Hydro Emulator, axis0)** — driven by the existing `velocity_pid_node` to replay wave-driven shaft motion (sine-wave velocity trajectory).  
 **Motor 2 (PTO / Power Take-Off, axis1)** — passively resists shaft motion with `τ = -B · ω` (linear damper). In Phase 1 the damping is configured directly on the ODrive; no extra ROS control node is needed.
 
+A Project Chrono multibody simulation (`chrono_flap_node`) runs alongside the control stack in either **SIL** (Software-in-the-Loop, no hardware required) or **parallel/shadow** mode.
+
+---
+
+## Dual-mode operation
+
+Two operating modes are supported, selectable via the `sil_mode` parameter on `chrono_flap_node`:
+
+### SIL mode (`sil_mode:=true`) — no hardware required
+
+`chrono_flap_node` acts as the plant: it publishes `sensor_msgs/JointState` on `/joint_states`, and `velocity_pid_node` closes the control loop entirely through the simulation. No ODrive, CAN bus, or motor is needed.
+
+```
+chrono_flap_node (sil_mode=true)
+        │  publishes /joint_states
+        ▼
+velocity_pid_node ──/motor_effort_controller/commands──▶ chrono_flap_node
+```
+
+### Parallel mode (`sil_mode:=false`, default) — hardware shadow
+
+The real ODrive owns `/joint_states` via `joint_state_broadcaster`. `chrono_flap_node` reads the same torque commands the real hardware receives but does **not** publish `/joint_states`. Simulated and measured kinematics can be compared side-by-side in PlotJuggler to validate the identified plant model.
+
+```
+ODrive HW ──/joint_states──▶ velocity_pid_node ──/motor_effort_controller/commands──▶ ODrive HW
+                                                              │
+                                                              ▼
+                                                  chrono_flap_node (sil_mode=false)
+                                                  publishes ~/sim_position, ~/sim_velocity,
+                                                            ~/sim_acceleration
+```
+
+---
+
+## Quick start: SIL mode (no hardware)
+
+```bash
+# Terminal 1 — Chrono simulation (acts as the plant)
+ros2 run chrono_flap_sim chrono_flap_node --ros-args -p sil_mode:=true -p bearing_friction:=0.2
+
+# Terminal 2 — PID controller
+ros2 run odrive_velocity_pid velocity_pid_node --ros-args \
+  -p joint_name:=motor_joint \
+  -p control_mode:=position_only \
+  -p position_setpoint:=0.5
+```
+
+Verify data is flowing:
+
+```bash
+ros2 topic hz /joint_states
+ros2 topic echo /chrono_flap_node/sim_position --once
+```
+
+---
+
+## Quick start: parallel mode (with hardware)
+
+```bash
+# Terminal 1 — CAN bus
+sudo ip link set can0 down 2>/dev/null || true
+sudo ip link set can0 up type can bitrate 250000
+
+# Terminal 2 — Hardware stack (ros2_control + ODrive + PID + Chrono shadow)
+ros2 launch hil_odrive_ros2_control motor_control.launch.py
+
+# Terminal 3 — Chrono shadow (optional, if not started by launch file)
+ros2 run chrono_flap_sim chrono_flap_node --ros-args -p bearing_friction:=0.2
+```
+
 ---
 
 ## WEC HIL dyno concept
@@ -38,12 +108,14 @@ Both motors are on the **same ODrive board** (`can0`). axis0 = `node_id=0` (hydr
 ```
 hil_odrive_ros2_control/
 └── src/
-    ├── hil_odrive_ros2_control/   # Launch files, controller YAML, URDF/Xacro (motor_joint + pto_joint)
-    ├── odrive_base/               # ODrive base library (from upstream odriverobotics/ros_odrive)
-    ├── odrive_ros2_control/       # ODrive ros2_control hardware interface plugin (from upstream odriverobotics/ros_odrive)
-    └── odrive_velocity_pid/       # Velocity PID + feedforward node (hydro emulator)
+    ├── chrono_flap_sim/             # Project Chrono multibody simulation (SIL + parallel shadow)
+    ├── hil_odrive_ros2_control/     # Launch files, controller YAML, URDF/Xacro
+    ├── odrive_base/                 # ODrive base library (vendored from odriverobotics/ros_odrive)
+    ├── odrive_ros2_control/         # ODrive ros2_control hardware interface plugin (vendored)
+    └── odrive_velocity_pid/         # Cascaded PID controller node
 ```
 
+- **`src/chrono_flap_sim/`** — Project Chrono inverted-pendulum flap simulation; runs as SIL plant or parallel shadow for model validation
 - **`src/hil_odrive_ros2_control/`** — launch file (`motor_control.launch.py`), controller YAML (`config/controllers.yaml`), and URDF/Xacro (`description/urdf/motor.urdf.xacro`) for `motor_joint` (axis0) and `pto_joint` (axis1)
 - **`src/odrive_velocity_pid/`** — velocity PID + feedforward node that reads `/joint_states`, generates a sinusoidal velocity reference, and publishes torque commands for Motor 1
 - **`src/odrive_base/`** and **`src/odrive_ros2_control/`** — ODrive `ros2_control` hardware interface plugin and its base library, sourced from the upstream [`odriverobotics/ros_odrive`](https://github.com/odriverobotics/ros_odrive) repository
@@ -213,20 +285,55 @@ This opens PlotJuggler where you can start streaming data. Useful topics to plot
 - `/velocity_pid_node/velocity_error`, `/velocity_pid_node/position_error` — tracking errors
 - `/velocity_pid_node/velocity_command` — outer-loop velocity command (cascade mode)
 
+### PlotJuggler comparison: SIL and parallel modes
+
+In **parallel mode**, compare the Chrono shadow prediction against real hardware measurements:
+
+| Simulated (Chrono) | Real (hardware) |
+|---|---|
+| `/chrono_flap_node/sim_position` | `/velocity_pid_node/measured_position` |
+| `/chrono_flap_node/sim_velocity` | `/velocity_pid_node/measured_velocity` |
+
+If the traces track closely, the identified parameters (`flap_mass=0.5 kg`, `joint_stiffness=0.712441 N·m/rad`, `bearing_friction=0.2 N·m·s/rad`) are a good model of the plant. Divergence indicates where the model needs refinement.
+
+In **SIL mode**, all kinematics come from the simulation:
+
+| Topic | Description |
+|---|---|
+| `/chrono_flap_node/sim_position` | Simulated joint angle (rad) |
+| `/chrono_flap_node/sim_velocity` | Simulated joint angular velocity (rad/s) |
+| `/chrono_flap_node/sim_acceleration` | Simulated joint angular acceleration (rad/s²) |
+| `/velocity_pid_node/measured_position` | Same as sim_position (PID reads from /joint_states → chrono) |
+| `/velocity_pid_node/position_error` | Closed-loop position error (rad) |
+
 ```bash
 source install/setup.bash
 ros2 run rqt_reconfigure rqt_reconfigure
 ```
 
 This opens `rqt_reconfigure`, where you can refresh the parameter list and select
-`velocity_pid_node` to access and change most PID parameters at runtime.
+`velocity_pid_node` or `chrono_flap_node` to access and change reconfigurable parameters at runtime.
 
 ---
 
 ## Data flow
 
+### SIL mode (no hardware)
+
 ```
-/joint_states → velocity_pid_node → /motor_effort_controller/commands → effort_controller → ODrive HW plugin → CAN → ODrive axis0 (motor_joint)
+chrono_flap_node (sil_mode=true) → /joint_states → velocity_pid_node → /motor_effort_controller/commands → chrono_flap_node
+```
+
+`chrono_flap_node` publishes `/joint_states` at 100 Hz, replacing `joint_state_broadcaster`. `velocity_pid_node` is unaware of the source — the interface is identical.
+
+### Parallel mode (with hardware)
+
+```
+ODrive HW → /joint_states → velocity_pid_node → /motor_effort_controller/commands → ODrive HW
+                                                              │
+                                                              ▼
+                                                  chrono_flap_node (sil_mode=false)
+                                                  ~/sim_position, ~/sim_velocity, ~/sim_acceleration
 
 ODrive axis1 (pto_joint) ← passive damping configured via odrivetool (τ = -B·ω)
 
@@ -234,8 +341,8 @@ CAN → ODrive HW plugin → electrical_power, mechanical_power state interfaces
 ```
 
 `velocity_pid_node` is a **standalone node** — not a ros2_control controller plugin. It reads
-`/joint_states` published by `joint_state_broadcaster` and writes directly to the effort
-controller's command topic.
+`/joint_states` published by `joint_state_broadcaster` (hardware) or `chrono_flap_node` (SIL) and
+writes directly to the effort controller's command topic.
 
 ---
 
@@ -306,15 +413,26 @@ controller's command topic.
 
 ---
 
-## Motor characterization (from hardware tuning)
+## Identified plant parameters
 
-| Property | Estimated value | How determined |
-|----------|----------------|----------------|
-| Viscous friction coefficient | ~0.40 Nm/(rad/s) | `kff` that gives best tracking without overshoot |
-| Rotor inertia J | ~0.20 kg·m² | `kaff` value; matches `τ = J·α` at observed accelerations |
-| Max safe torque | ~0.40 Nm | Motor trips (overcurrent) at higher torques during fast sinusoidal reversals |
-| CAN velocity noise floor | ±5-10 rad/s | Observed measurement scatter at zero command |
-| Optimal filter alpha | 0.90 | Aggressive smoothing needed to suppress CAN noise |
+Results from parameter identification on the 30 cm × 30 cm acrylic flap test bench:
+
+| Property | Value | Method |
+|---|---|---|
+| Flap mass | 0.5 kg | Parameter identification |
+| Joint stiffness (restoring spring) | 0.712441 N·m/rad | Parameter identification |
+| Bearing friction (unpowered ODrive) | 0.2 N·m·s/rad | Parameter identification |
+| Joint damping (powered ODrive) | 0.0 N·m·s/rad | Parameter identification |
+| Flap dimensions | 0.30 × 0.30 × 0.0025 m | Measured |
+
+These values are used as defaults in `chrono_flap_node` (see `src/chrono_flap_sim/src/chrono_flap_node.cpp`) and should be passed explicitly when running outside the launch file:
+
+```bash
+ros2 run chrono_flap_sim chrono_flap_node --ros-args \
+  -p flap_mass_kg:=0.5 \
+  -p joint_stiffness:=0.712441 \
+  -p bearing_friction:=0.2
+```
 
 ---
 
@@ -349,6 +467,7 @@ Phase 2 will add a **pluggable PTO control framework** for comparing WEC control
 
 ## Sub-package documentation
 
+- [`src/chrono_flap_sim/README.md`](src/chrono_flap_sim/README.md) — Project Chrono flap simulation: physics model, SIL vs parallel modes, all parameters, published topics, and build instructions
 - [`src/hil_odrive_ros2_control/README.md`](src/hil_odrive_ros2_control/README.md) — hardware launch, URDF configuration, CAN node ID setup, and detailed controller bring-up steps
 - [`src/odrive_velocity_pid/README.md`](src/odrive_velocity_pid/README.md) — cascaded PID node: control modes, all parameters, published topics, and safety features
 - [`src/odrive_ros2_control/README.md`](src/odrive_ros2_control/README.md) — ODrive ros2_control hardware interface plugin (vendored from upstream)

@@ -9,13 +9,54 @@ reference, and publishes torque (effort) commands.
 > `/joint_states` for feedback and publishes directly to an effort controller topic. This is an
 > intentional design choice that keeps the PID logic simple and independently restartable.
 
+The node works identically whether `/joint_states` is published by real hardware
+(`joint_state_broadcaster` + ODrive) or by `chrono_flap_node` with `sil_mode:=true`. This makes
+it straightforward to develop and tune the controller entirely in simulation before connecting
+hardware.
+
+---
+
+## SIL mode (no hardware)
+
+When `chrono_flap_node` is launched with `sil_mode:=true`, it publishes `sensor_msgs/JointState`
+on `/joint_states` at `rate_hz` Hz. The `velocity_pid_node` consumes these messages exactly as it
+would from a real motor — the interface is identical.
+
+```bash
+# Terminal 1 — simulation plant
+ros2 run chrono_flap_sim chrono_flap_node --ros-args \
+  -p sil_mode:=true \
+  -p bearing_friction:=0.2 \
+  -p joint_stiffness:=0.712441
+
+# Terminal 2 — PID controller
+ros2 run odrive_velocity_pid velocity_pid_node --ros-args \
+  -p joint_name:=motor_joint \
+  -p control_mode:=position_only \
+  -p position_setpoint:=0.5
+```
+
+Verify data is flowing:
+
+```bash
+ros2 topic hz /joint_states
+ros2 topic echo /velocity_pid_node/measured_position --once
+```
+
+Use `rqt_reconfigure` to adjust PID gains and physical parameters without restarting either node:
+
+```bash
+ros2 run rqt_reconfigure rqt_reconfigure
+```
+
 ---
 
 ## Prerequisites
 
 - ROS 2 Jazzy desktop installed and sourced
 - A running `ros2_control` stack with a `joint_state_broadcaster` and an effort controller
-  (e.g. `effort_controllers/JointGroupEffortController`) for the hardware side
+  (e.g. `effort_controllers/JointGroupEffortController`) for the hardware side, **or**
+  `chrono_flap_node` with `sil_mode:=true` for simulation (no hardware required)
 
 ---
 
