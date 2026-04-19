@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.14)
 project(chrono_flap_sim)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -15,7 +15,7 @@ find_package(std_msgs REQUIRED)
 # ── Project Chrono ─────────────────────────────────────────────────────────────────────────────
 # Adjust Chrono_DIR if ChronoConfig.cmake is not on the default CMake search path, e.g.:
 #   cmake -DChronoConfig_DIR=/path/to/chrono/lib/cmake/Chrono ..
-find_package(Chrono REQUIRED COMPONENTS Core)
+find_package(Chrono REQUIRED)
 
 add_executable(chrono_flap_node src/chrono_flap_node.cpp)
 
