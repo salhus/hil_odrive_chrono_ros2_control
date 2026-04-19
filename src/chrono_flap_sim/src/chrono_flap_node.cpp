@@ -3,16 +3,24 @@
 // ChronoFlapNode - ROS 2 node running a Project Chrono simulation of a motor-driven flap.
 // Uses a manual simulation loop so VSG rendering happens on the main thread.
 //
-// The revolute joint axis is Y, so the flap swings in the XZ plane under gravity
-// (pendulum behaviour). External torque from the effort controller drives the flap.
+// Physical setup:
+//   - 30 cm × 30 cm × 0.25 cm acrylic flap (~0.27 kg)
+//   - Pivot at the BOTTOM edge (inverted pendulum — flap stands upright)
+//   - Powered ODrive on one end of the pivot axis
+//   - Unpowered ODrive on the other end (passive bearing with cogging/friction)
+//   - θ = 0 is upright; gravity destabilises the flap
+//
+// The revolute joint axis is Y, so the flap swings in the XZ plane under gravity.
 //
 // The publish rate (rate_hz, default 100 Hz) matches the hardware control loop.
 // The solver runs at solver_rate_hz (default 1000 Hz) internally for numerical stability,
 // taking multiple sub-steps per publish tick.
 //
 // The torque applied each sub-step is:
-//   τ_total = τ_external - B·ω - K·θ
-// where B = joint_damping, K = joint_stiffness, θ = motor angle, ω = motor angular velocity.
+//   τ_total = τ_external - B_joint·ω - B_bearing·ω - K·θ
+// where B_joint = joint_damping (powered ODrive friction),
+//       B_bearing = bearing_friction (unpowered ODrive cogging/friction),
+//       K = joint_stiffness, θ = motor angle, ω = motor angular velocity.
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -39,8 +47,8 @@
    using namespace chrono::irrlicht;
 #endif
 using namespace chrono;
-static constexpr double kFlapVisHeight   = 0.02;
-static constexpr double kFlapVisDepth    = 0.01;
+// Visual shape constants
+static constexpr double kFlapVisDepth    = 0.0025;  // 0.25 cm acrylic thickness
 static constexpr double kPivotMarkerSize = 0.04;
 class ChronoFlapNode : public rclcpp::Node
 {
@@ -52,22 +60,32 @@ public:
     sim_velocity_(0.0),
     sim_acceleration_(0.0)
   {
+    // --- Declare parameters ---
+    // Timing
     this->declare_parameter<double>("rate_hz", 100.0);
     this->declare_parameter<double>("solver_rate_hz", 1000.0);
-    this->declare_parameter<double>("flap_length_m", 0.3);
-    this->declare_parameter<double>("flap_mass_kg", 0.05);
-    this->declare_parameter<double>("joint_damping", 0.0001);
+    // Physical flap properties (30 cm × 30 cm × 0.25 cm acrylic)
+    this->declare_parameter<double>("flap_length_m", 0.30);
+    this->declare_parameter<double>("flap_width_m", 0.30);
+    this->declare_parameter<double>("flap_mass_kg", 0.27);
+    // Joint dynamics
+    this->declare_parameter<double>("joint_damping", 0.001);
     this->declare_parameter<double>("joint_stiffness", 0.0);
+    this->declare_parameter<double>("bearing_friction", 0.005);
+    // ROS interface
     this->declare_parameter<std::string>("effort_topic", "/motor_effort_controller/commands");
     this->declare_parameter<bool>("enable_visualization", false);
-    rate_hz_          = this->get_parameter("rate_hz").as_double();
-    solver_rate_hz_   = this->get_parameter("solver_rate_hz").as_double();
-    flap_length_      = this->get_parameter("flap_length_m").as_double();
-    flap_mass_        = this->get_parameter("flap_mass_kg").as_double();
-    joint_damping_    = this->get_parameter("joint_damping").as_double();
-    joint_stiffness_  = this->get_parameter("joint_stiffness").as_double();
-    effort_topic_     = this->get_parameter("effort_topic").as_string();
-    enable_vis_       = this->get_parameter("enable_visualization").as_bool();
+    // --- Read parameters ---
+    rate_hz_           = this->get_parameter("rate_hz").as_double();
+    solver_rate_hz_    = this->get_parameter("solver_rate_hz").as_double();
+    flap_length_       = this->get_parameter("flap_length_m").as_double();
+    flap_width_        = this->get_parameter("flap_width_m").as_double();
+    flap_mass_         = this->get_parameter("flap_mass_kg").as_double();
+    joint_damping_     = this->get_parameter("joint_damping").as_double();
+    joint_stiffness_   = this->get_parameter("joint_stiffness").as_double();
+    bearing_friction_  = this->get_parameter("bearing_friction").as_double();
+    effort_topic_      = this->get_parameter("effort_topic").as_string();
+    enable_vis_        = this->get_parameter("enable_visualization").as_bool();
     // Publish interval (wall-clock pacing)
     publish_dt_ = (rate_hz_ > 0.0) ? (1.0 / rate_hz_) : 0.01;
     // Solver timestep (internal sub-stepping)
@@ -97,9 +115,9 @@ public:
     RCLCPP_INFO(
       this->get_logger(),
       "ChronoFlapNode started: publish=%.0f Hz, solver=%.0f Hz (%d substeps), "
-      "flap=%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f",
-      rate_hz_, solver_rate_hz_, substeps_, flap_length_, flap_mass_,
-      joint_damping_, joint_stiffness_);
+      "flap=%.3f×%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f",
+      rate_hz_, solver_rate_hz_, substeps_, flap_length_, flap_width_, flap_mass_,
+      joint_damping_, joint_stiffness_, bearing_friction_);
   }
   void run()
   {
@@ -128,12 +146,13 @@ public:
       // Record velocity before sub-stepping for acceleration estimate
       const double vel_before = sim_velocity_;
       // Run solver sub-steps
-      // τ_total = τ_external - B·ω - K·θ
+      // τ_total = τ_external - (B_joint + B_bearing)·ω - K·θ
       for (int i = 0; i < substeps_; ++i) {
         const double angle = motor_link_->GetMotorAngle();
         const double omega = motor_link_->GetMotorAngleDt();
+        const double total_damping = joint_damping_ + bearing_friction_;
         const double total_torque = latest_torque_
-                                  - joint_damping_   * omega
+                                  - total_damping    * omega
                                   - joint_stiffness_ * angle;
         torque_fn_->SetSetpoint(total_torque, sys_->GetChTime());
         sys_->DoStepDynamics(solver_dt_);
@@ -160,7 +179,8 @@ private:
     sys_->AddBody(ground_);
     flap_ = std::make_shared<ChBody>();
     update_flap_inertia();
-    flap_vis_shape_ = std::make_shared<ChVisualShapeBox>(flap_length_, kFlapVisHeight, kFlapVisDepth);
+    flap_vis_shape_ = std::make_shared<ChVisualShapeBox>(
+      flap_width_, kFlapVisDepth, flap_length_);
     flap_->AddVisualShape(flap_vis_shape_);
     sys_->AddBody(flap_);
     motor_link_ = std::make_shared<ChLinkMotorRotationTorque>();
@@ -178,7 +198,7 @@ private:
     try {
       auto vis = chrono_types::make_shared<ChVisualSystemVSG>();
       vis->AttachSystem(sys_.get());
-      vis->SetWindowTitle("Chrono Flap Simulation");
+      vis->SetWindowTitle("Chrono Flap Simulation (Inverted Pendulum)");
       vis->SetWindowSize(800, 600);
       vis->AddCamera(ChVector3d(0.0, -1.5, 0.0), ChVector3d(0.0, 0.0, 0.0));
       vis->Initialize();
@@ -198,7 +218,7 @@ private:
     try {
       auto vis = chrono_types::make_shared<ChVisualSystemIrrlicht>();
       vis->SetWindowSize(800, 600);
-      vis->SetWindowTitle("Chrono Flap Simulation");
+      vis->SetWindowTitle("Chrono Flap Simulation (Inverted Pendulum)");
       vis->Initialize();
       vis->AddSkyBox();
       vis->AddCamera(ChVector3d(0.0, -1.5, 0.0), ChVector3d(0.0, 0.0, 0.0));
@@ -220,12 +240,22 @@ private:
   void update_flap_inertia()
   {
     flap_->SetMass(flap_mass_);
-    const double L      = flap_length_;
-    const double m      = flap_mass_;
-    const double I_perp = (1.0 / 3.0) * m * L * L;
-    flap_->SetInertiaXX(ChVector3d(I_perp, I_perp, 1e-6 * I_perp));
-    // Flap extends along +X from the pivot; CoM at L/2
-    flap_->SetPos(ChVector3d(L / 2.0, 0.0, 0.0));
+    const double L = flap_length_;
+    const double W = flap_width_;
+    const double m = flap_mass_;
+    // Moment of inertia of a thin rectangular plate about the bottom edge (pivot):
+    // I_pivot = (1/3)·m·L²  (rotation about the pivot axis = Y)
+    // I_width = (1/12)·m·W² (rotation about the Z axis through CoM)
+    // I_thin  ≈ small       (rotation about X axis, plate is thin)
+    const double I_pivot = (1.0 / 3.0) * m * L * L;
+    const double I_width = (1.0 / 12.0) * m * W * W;
+    const double I_thin  = 1e-6 * I_pivot;
+    // Inertia tensor at CoM (Chrono uses principal axes at CoM)
+    // X = width direction, Y = pivot axis, Z = length direction (up)
+    flap_->SetInertiaXX(ChVector3d(I_pivot, I_width, I_thin));
+    // Flap extends UPWARD (+Z) from pivot; CoM at L/2 above pivot
+    // θ = 0 is upright (inverted pendulum)
+    flap_->SetPos(ChVector3d(0.0, 0.0, L / 2.0));
     flap_->SetPosDt(ChVector3d(0.0, 0.0, 0.0));
     flap_->SetAngVelParent(ChVector3d(0.0, 0.0, 0.0));
   }
@@ -242,14 +272,16 @@ private:
         result.reason = "Parameter '" + param.get_name() + "' cannot be changed at runtime.";
         return result;
       }
-      if (param.get_name() == "flap_length_m" || param.get_name() == "flap_mass_kg") {
+      if (param.get_name() == "flap_length_m" || param.get_name() == "flap_mass_kg"
+          || param.get_name() == "flap_width_m") {
         if (param.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE || param.as_double() <= 0.0) {
           result.successful = false;
           result.reason = param.get_name() + " must be a positive double.";
           return result;
         }
       }
-      if (param.get_name() == "joint_damping" || param.get_name() == "joint_stiffness") {
+      if (param.get_name() == "joint_damping" || param.get_name() == "joint_stiffness"
+          || param.get_name() == "bearing_friction") {
         if (param.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE || param.as_double() < 0.0) {
           result.successful = false;
           result.reason = param.get_name() + " must be non-negative.";
@@ -263,15 +295,18 @@ private:
   {
     bool body_needs_update = false;
     for (const auto & param : parameters) {
-      if (param.get_name() == "flap_length_m") { flap_length_ = param.as_double(); body_needs_update = true; }
+      if (param.get_name() == "flap_length_m")    { flap_length_ = param.as_double(); body_needs_update = true; }
+      else if (param.get_name() == "flap_width_m") { flap_width_ = param.as_double(); body_needs_update = true; }
       else if (param.get_name() == "flap_mass_kg") { flap_mass_ = param.as_double(); body_needs_update = true; }
-      else if (param.get_name() == "joint_damping") { joint_damping_ = param.as_double(); }
-      else if (param.get_name() == "joint_stiffness") { joint_stiffness_ = param.as_double(); }
+      else if (param.get_name() == "joint_damping")    { joint_damping_ = param.as_double(); }
+      else if (param.get_name() == "joint_stiffness")  { joint_stiffness_ = param.as_double(); }
+      else if (param.get_name() == "bearing_friction") { bearing_friction_ = param.as_double(); }
     }
     if (body_needs_update) {
       update_flap_inertia();
       if (flap_->GetVisualModel()) { flap_->GetVisualModel()->Clear(); }
-      flap_vis_shape_ = std::make_shared<ChVisualShapeBox>(flap_length_, kFlapVisHeight, kFlapVisDepth);
+      flap_vis_shape_ = std::make_shared<ChVisualShapeBox>(
+        flap_width_, kFlapVisDepth, flap_length_);
       flap_->AddVisualShape(flap_vis_shape_);
     }
   }
@@ -291,10 +326,12 @@ private:
   double      publish_dt_{0.01};
   double      solver_dt_{0.001};
   int         substeps_{10};
-  double      flap_length_{0.3};
-  double      flap_mass_{0.05};
-  double      joint_damping_{0.0001};
+  double      flap_length_{0.30};
+  double      flap_width_{0.30};
+  double      flap_mass_{0.27};
+  double      joint_damping_{0.001};
   double      joint_stiffness_{0.0};
+  double      bearing_friction_{0.005};
   std::string effort_topic_{"/motor_effort_controller/commands"};
   bool        enable_vis_{false};
   bool        vis_active_{false};
