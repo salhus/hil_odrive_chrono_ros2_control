@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="odrive_wec_dyno_sim">
+
+  <!-- Minimal kinematic tree (sim flap — orange, distinct materials for RViz dual-display) -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.04 0.04 0.04"/>
+      </geometry>
+      <material name="dark_grey_sim">
+        <color rgba="0.4 0.4 0.4 0.5"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- 0.25cm thick x 30cm wide x 30cm tall acrylic flap (thickness x width x height) -->
+  <!-- CoM is at z=0.15 (half of 0.30m height) above the joint origin -->
+  <link name="motor_link">
+    <visual>
+      <origin xyz="0 0 0.15" rpy="0 0 0"/>
+      <geometry>
+        <!-- size: x=0.0025m (thickness), y=0.30m (width along rotation axis), z=0.30m (height) -->
+        <box size="0.0025 0.30 0.30"/>
+      </geometry>
+      <material name="acrylic_orange">
+        <color rgba="1.0 0.5 0.0 0.5"/>
+      </material>
+    </visual>
+    <inertial>
+      <!-- Inertia at CoM (z=0.15 above joint). Using thin-rod approximation along z-axis:
+           I_swing_pivot = (1/3)*m*L^2 = (1/3)*0.5*0.09 = 0.015
+           I_swing_com   = I_swing_pivot - m*(L/2)^2 = 0.015 - 0.01125 = 0.00375 -->
+      <origin xyz="0 0 0.15"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.015" ixy="0" ixz="0" iyy="0.00375" iyz="0" izz="0.000015"/>
+    </inertial>
+  </link>
+
+  <joint name="motor_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="motor_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- PTO motor (axis1) — same shaft as motor_joint, passive linear damper -->
+  <!-- Commented out: pto_link/pto_joint are not published by joint_state_broadcaster,
+       causing robot_state_publisher to fail computing TF → RViz RobotModel error. -->
+  <!--
+  <link name="pto_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.015" length="0.03"/>
+      </geometry>
+      <material name="orange_sim">
+        <color rgba="1.0 0.5 0.0 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="pto_joint" type="continuous">
+    <parent link="motor_link"/>
+    <child link="pto_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  -->
+
+</robot>
