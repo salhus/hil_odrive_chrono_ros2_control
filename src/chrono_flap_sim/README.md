@@ -137,11 +137,27 @@ the hardware receives and integrates the equations of motion, publishing its pre
 `~/sim_*` topics. Compare these against real hardware measurements in PlotJuggler to validate
 the identified parameters.
 
+In parallel mode, `chrono_flap_node` also subscribes to `/joint_states` (the real hardware
+measurements) and applies a **Luenberger observer correction** to prevent the simulated position
+from drifting away from reality over time. Each tick, after Chrono integrates, the predicted
+position is nudged toward the measured position:
+
+```
+θ_corrected = θ_predicted + α · (θ_measured − θ_predicted)
+```
+
+where `α` is the `observer_gain` parameter (default `0.05`). This preserves fast transient
+dynamics (which Chrono models well) while eliminating slow drift due to open-loop integration
+error. Set `observer_gain:=0.0` to disable the correction and run fully open-loop.
+
+For a detailed theoretical explanation, see
+[`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md).
+
 ```
 ODrive HW ──/joint_states──▶ velocity_pid_node ──/motor_effort_controller/commands──▶ ODrive HW
-                                                            │
-                                                            ▼
-                                                chrono_flap_node (sil_mode=false)
+               │                                               │
+               │ (measured position for observer)              ▼
+               └──────────────────────────────▶ chrono_flap_node (sil_mode=false)
                                                 ~/sim_position, ~/sim_velocity, ~/sim_acceleration
 ```
 
@@ -180,6 +196,7 @@ changed at runtime via `ros2 param set` or `rqt_reconfigure`.
 | `joint_damping` | double | `0.0` | ✓ | Viscous damping at the powered ODrive joint (N·m·s/rad) |
 | `joint_stiffness` | double | `0.712441` | ✓ | Restoring spring stiffness (N·m/rad); identified value from parameter ID |
 | `bearing_friction` | double | `0.4` | ✓ | Bearing friction at the unpowered ODrive (N·m·s/rad); identified test-bench value |
+| `observer_gain` | double | `0.05` | ✓ | Luenberger observer gain α ∈ [0.0, 1.0] (parallel mode only). Each tick: `θ_corrected = θ_predicted + α·(θ_measured − θ_predicted)`. `0.0` = fully open-loop (will drift); `1.0` = snap to measurement each tick. See [`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md). |
 
 > **Identified values:** For the 30 cm × 30 cm acrylic flap on this test bench, the parameter
 > identification results are:
@@ -211,9 +228,10 @@ All `~/` topics are scoped under the node name (e.g. `/chrono_flap_node/sim_posi
 
 ## Subscribed topics
 
-| Topic | Type | Description |
-|---|---|---|
-| `/motor_effort_controller/commands` | `std_msgs/Float64MultiArray` | Torque input (N·m); first element used |
+| Topic | Type | Condition | Description |
+|---|---|---|---|
+| `/motor_effort_controller/commands` | `std_msgs/Float64MultiArray` | Always | Torque input (N·m); first element used |
+| `/joint_states` | `sensor_msgs/JointState` | Parallel mode only (`sil_mode=false`) | Real hardware joint states; position of `joint_name` is used for the Luenberger observer correction |
 
 ---
 
