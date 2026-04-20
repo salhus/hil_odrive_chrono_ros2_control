@@ -41,6 +41,17 @@ def generate_launch_description():
     )
     robot_description = {"robot_description": ParameterValue(robot_description_content, value_type=str)}
 
+    sim_robot_description_content = Command(
+        [
+            PathJoinSubstitution([FindExecutable(name="xacro")]),
+            " ",
+            PathJoinSubstitution(
+                [FindPackageShare("hil_odrive_ros2_control"), "description", "urdf", "motor_sim.urdf.xacro"]
+            ),
+        ]
+    )
+    sim_robot_description = {"robot_description": ParameterValue(sim_robot_description_content, value_type=str)}
+
     control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
@@ -59,7 +70,7 @@ def generate_launch_description():
         package="robot_state_publisher",
         executable="robot_state_publisher",
         name="sim_robot_state_publisher",
-        parameters=[robot_description, {"frame_prefix": "sim/"}],
+        parameters=[sim_robot_description, {"frame_prefix": "sim/"}],
         remappings=[("joint_states", "/sim_joint_states")],
         output="both",
     )
