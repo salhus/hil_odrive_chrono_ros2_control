@@ -43,7 +43,7 @@ I_pivot = (1/3) · m · L²
 Each solver sub-step applies:
 
 ```
-τ_total = τ_external − (B_joint + B_bearing) · ω − K · θ
+τ_total = τ_external − (B_joint + B_bearing) · ω − C_coulomb · sign(ω) − K · θ
 ```
 
 | Symbol | Parameter | Description |
@@ -51,6 +51,7 @@ Each solver sub-step applies:
 | `τ_external` | — | Torque from `velocity_pid_node` via the effort topic (N·m) |
 | `B_joint` | `joint_damping` | Viscous damping at the powered ODrive joint (N·m·s/rad) |
 | `B_bearing` | `bearing_friction` | Bearing friction at the unpowered ODrive (N·m·s/rad) |
+| `C_coulomb` | `coulomb_friction` | Coulomb (dry) friction magnitude (N·m); constant braking force opposing motion at all speeds |
 | `K` | `joint_stiffness` | Restoring spring stiffness (N·m/rad); models cable/structural stiffness |
 | `ω` | — | Instantaneous joint angular velocity (rad/s) |
 | `θ` | — | Joint angle measured from upright equilibrium (rad) |
@@ -196,6 +197,7 @@ changed at runtime via `ros2 param set` or `rqt_reconfigure`.
 | `joint_damping` | double | `0.0` | ✓ | Viscous damping at the powered ODrive joint (N·m·s/rad) |
 | `joint_stiffness` | double | `0.712441` | ✓ | Restoring spring stiffness (N·m/rad); identified value from parameter ID |
 | `bearing_friction` | double | `0.4` | ✓ | Bearing friction at the unpowered ODrive (N·m·s/rad); identified test-bench value |
+| `coulomb_friction` | double | `0.0` | ✓ | Coulomb (dry) friction magnitude (N·m); constant braking force applied as `coulomb_friction * sign(ω)`. Models static/kinetic dry friction in bearings. |
 | `observer_gain` | double | `0.05` | ✓ | Luenberger observer gain α ∈ [0.0, 1.0] (parallel mode only). Each tick: `θ_corrected = θ_predicted + α·(θ_measured − θ_predicted)`. `0.0` = fully open-loop (will drift); `1.0` = snap to measurement each tick. See [`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md). |
 
 > **Identified values:** For the 30 cm × 30 cm acrylic flap on this test bench, the parameter

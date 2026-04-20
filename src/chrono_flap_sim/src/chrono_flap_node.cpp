@@ -17,7 +17,7 @@
 //   - θ = 0 is upright; gravity destabilises the flap
 //
 // Torque law each sub-step:
-//   τ_total = τ_external − (B_joint + B_bearing)·ω − K·θ
+//   τ_total = τ_external − (B_joint + B_bearing)·ω − C_coulomb·sign(ω) − K·θ
 //
 #include <chrono>
 #include <cmath>
@@ -78,6 +78,7 @@ public:
     this->declare_parameter<double>("joint_damping", 0.0);
     this->declare_parameter<double>("joint_stiffness", 0.712441);
     this->declare_parameter<double>("bearing_friction", 0.4);
+    this->declare_parameter<double>("coulomb_friction", 0.0);
     // Observer correction (parallel mode only)
     this->declare_parameter<double>("observer_gain", 0.05);
     // ROS interface
@@ -96,6 +97,7 @@ public:
     joint_damping_     = this->get_parameter("joint_damping").as_double();
     joint_stiffness_   = this->get_parameter("joint_stiffness").as_double();
     bearing_friction_  = this->get_parameter("bearing_friction").as_double();
+    coulomb_friction_  = this->get_parameter("coulomb_friction").as_double();
     observer_gain_     = this->get_parameter("observer_gain").as_double();
     effort_topic_      = this->get_parameter("effort_topic").as_string();
     enable_vis_        = this->get_parameter("enable_visualization").as_bool();
@@ -164,10 +166,10 @@ public:
     RCLCPP_INFO(
       this->get_logger(),
       "ChronoFlapNode started [sil_mode=%s]: publish=%.0f Hz, solver=%.0f Hz (%d substeps), "
-      "flap=%.3fx%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f, observer_gain=%.3f",
+      "flap=%.3fx%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f, coulomb=%.4f, observer_gain=%.3f",
       sil_mode_ ? "true" : "false", rate_hz_, solver_rate_hz_, substeps_,
       flap_length_, flap_width_, flap_mass_,
-      joint_damping_, joint_stiffness_, bearing_friction_, observer_gain_);
+      joint_damping_, joint_stiffness_, bearing_friction_, coulomb_friction_, observer_gain_);
   }
 
   void run()
@@ -197,13 +199,15 @@ public:
       // Record velocity before sub-stepping for acceleration estimate
       const double vel_before = sim_velocity_;
       // Run solver sub-steps
-      // τ_total = τ_external - (B_joint + B_bearing)·ω - K·θ
+      // τ_total = τ_external - (B_joint + B_bearing)·ω - C_coulomb·sign(ω) - K·θ
       for (int i = 0; i < substeps_; ++i) {
         const double angle = motor_link_->GetMotorAngle();
         const double omega = motor_link_->GetMotorAngleDt();
         const double total_damping = joint_damping_ + bearing_friction_;
+        const double coulomb = coulomb_friction_ * (omega > 0.0 ? 1.0 : (omega < 0.0 ? -1.0 : 0.0));
         const double total_torque = latest_torque_
                                   - total_damping    * omega
+                                  - coulomb
                                   - joint_stiffness_ * angle;
         torque_fn_->SetSetpoint(total_torque, sys_->GetChTime());
         sys_->DoStepDynamics(solver_dt_);
@@ -350,7 +354,7 @@ private:
         }
       }
       if (param.get_name() == "joint_damping" || param.get_name() == "joint_stiffness"
-          || param.get_name() == "bearing_friction") {
+          || param.get_name() == "bearing_friction" || param.get_name() == "coulomb_friction") {
         if (param.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE || param.as_double() < 0.0) {
           result.successful = false;
           result.reason = param.get_name() + " must be non-negative.";
@@ -378,6 +382,7 @@ private:
       else if (param.get_name() == "joint_damping")    { joint_damping_ = param.as_double(); }
       else if (param.get_name() == "joint_stiffness")  { joint_stiffness_ = param.as_double(); }
       else if (param.get_name() == "bearing_friction") { bearing_friction_ = param.as_double(); }
+      else if (param.get_name() == "coulomb_friction")  { coulomb_friction_ = param.as_double(); }
       else if (param.get_name() == "observer_gain")    { observer_gain_ = param.as_double(); }
     }
     if (body_needs_update) {
@@ -431,6 +436,7 @@ private:
   double      joint_damping_{0.0};
   double      joint_stiffness_{0.712441};
   double      bearing_friction_{0.005};
+  double      coulomb_friction_{0.0};
   double      observer_gain_{0.05};
   std::string effort_topic_{"/motor_effort_controller/commands"};
   bool        enable_vis_{false};

@@ -28,7 +28,21 @@ This integral grows without bound, causing:
 - **Amplitude drift and phase error** for sine-wave inputs (even a 1% velocity bias at 1 rad/s
   produces ~0.01 rad/s of position drift per second)
 
+A common source of such velocity errors is modelling friction incorrectly. The viscous term
+`(B_joint + B_bearing)·ω` in the torque law goes to zero at low speed, while real hardware has
+significant **Coulomb (dry) friction** — a constant opposing force that brakes the system at
+every zero-crossing. Under-modelling this causes the sim to overshoot at every half-cycle and
+accumulate runaway drift that even large `observer_gain` values struggle to correct. Adding a
+`coulomb_friction` parameter to the torque law addresses this at the source:
+
 RVIZ2 looks fine because it reads from the real hardware's `/joint_states`, not from the sim.
+
+```
+τ_total = τ_external − (B_joint + B_bearing)·ω − C_coulomb·sign(ω) − K·θ
+```
+
+Tune `coulomb_friction` alongside `bearing_friction` to model dry friction at zero-crossings.
+The observer (below) handles any residual slow drift once the physics model is well-matched.
 
 ## Why SIL mode does not have this problem
 
