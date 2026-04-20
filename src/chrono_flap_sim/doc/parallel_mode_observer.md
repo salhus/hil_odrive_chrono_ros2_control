@@ -63,10 +63,12 @@ no "real vs sim" discrepancy possible when the sim is the only reality.
 The standard solution is to weakly couple the simulated state back to the measured state. This
 is a **Luenberger observer** (also called a state observer or prediction-correction observer).
 
-Each tick, after Chrono integrates, the predicted position is nudged toward the measured position:
+Each tick, after Chrono integrates, the predicted position and velocity are nudged toward the
+measured values:
 
 ```
 θ_corrected = θ_predicted + α · (θ_measured − θ_predicted)
+ω_corrected = ω_predicted + β · (ω_measured − ω_predicted)
 ```
 
 where:
@@ -74,10 +76,17 @@ where:
 - `θ_measured` is the angle from the real hardware's `/joint_states` message
 - `α` is the `observer_gain` parameter (default `0.05`)
 - `θ_corrected` is written back into the Chrono body state for the next integration step
+- `ω_predicted` is the angular velocity from `motor_link_->GetMotorAngleDt()` after `DoStepDynamics`
+- `ω_measured` is the velocity from the real hardware's `/joint_states` message
+- `β` is the `velocity_observer_gain` parameter (default `0.0`)
+- `ω_corrected` is written back into the Chrono body state for the next integration step
 
-The corrected state is also fed back into the Chrono rigid body (via `flap_->SetRot()` and
-`flap_->SetPos()`) so that the next `DoStepDynamics` call begins from the corrected angle
-rather than re-predicting from the uncorrected one.
+The corrected state is fed back into the Chrono rigid body (via `flap_->SetRot()`,
+`flap_->SetPos()`, `flap_->SetPosDt()`, and `flap_->SetAngVelParent()`) so that the next
+`DoStepDynamics` call begins from the corrected angle **and velocity** rather than re-predicting
+from the uncorrected ones. This is critical for the stiffness term `K·θ` — without feeding the
+corrected angle back into the joint, `motor_link_->GetMotorAngle()` still returns the
+uncorrected Chrono internal angle, which can starve the sim of torque and cause small amplitude.
 
 ## Frequency-domain interpretation
 
@@ -104,6 +113,18 @@ This means:
 The crossover frequency scales linearly with `α`: increasing `α` raises the bandwidth,
 meaning you trust the measurement more at higher frequencies. Decreasing `α` lowers the
 bandwidth, meaning Chrono runs more independently.
+
+The same bandwidth analysis applies to `β` and the velocity correction.
+
+## Why velocity correction matters
+
+Even when position tracks well, the raw Chrono velocity `ω_predicted` may differ from the real
+hardware velocity. Because the torque law subtracts `(B_joint + B_bearing)·ω` and `K·θ` from
+the applied torque, any velocity error directly reduces the net torque applied in the next
+sub-step. A velocity observer with gain `β > 0` nudges the simulated velocity toward the
+measured one each tick, so the friction and stiffness terms in the torque law are computed from
+a more accurate speed. Start with a small value (e.g. `β = 0.05`) and increase toward `0.1–0.2`
+if the velocity traces still diverge after position is well matched.
 
 ## Physical analogy: weak spring between sim and reality
 
@@ -198,13 +219,17 @@ constant-gain observer is sufficient.
    independent Chrono physics: decrease `α` toward 0.01–0.02. The bandwidth is too high
    and the observer is dominating the fast response.
 
-5. **Set `observer_gain:=0.0`** temporarily to confirm you are seeing the same drift as
+5. **If velocity amplitude is too small** after position is matched: add a small velocity
+   correction gain `β` (e.g. `velocity_observer_gain:=0.05`). This ensures the stiffness
+   and friction terms see the correct speed each tick. Increase toward `0.2` if needed.
+
+6. **Set `observer_gain:=0.0`** temporarily to confirm you are seeing the same drift as
    before. This rules out other causes (e.g. wrong joint name, stale measurement).
 
-6. The `observer_gain` parameter is **dynamically reconfigurable** via `rqt_reconfigure`
-   — you can tune it live without restarting the node.
+7. Both `observer_gain` and `velocity_observer_gain` are **dynamically reconfigurable**
+   via `rqt_reconfigure` — you can tune them live without restarting the node.
 
 ```bash
 ros2 run rqt_reconfigure rqt_reconfigure
-# Select chrono_flap_node → adjust observer_gain slider
+# Select chrono_flap_node → adjust observer_gain / velocity_observer_gain sliders
 ```

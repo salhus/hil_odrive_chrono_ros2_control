@@ -73,7 +73,7 @@ public:
     // Physical flap properties (30 cm × 30 cm × 0.25 cm acrylic)
     this->declare_parameter<double>("flap_length_m", 0.30);
     this->declare_parameter<double>("flap_width_m", 0.30);
-    this->declare_parameter<double>("flap_mass_kg", 0.5);
+    this->declare_parameter<double>("flap_mass_kg", 0.21);
     // Joint dynamics
     this->declare_parameter<double>("joint_damping", 0.0);
     this->declare_parameter<double>("joint_stiffness", 0.712441);
@@ -81,6 +81,7 @@ public:
     this->declare_parameter<double>("coulomb_friction", 0.0);
     // Observer correction (parallel mode only)
     this->declare_parameter<double>("observer_gain", 0.05);
+    this->declare_parameter<double>("velocity_observer_gain", 0.0);
     // ROS interface
     this->declare_parameter<std::string>("effort_topic", "/motor_effort_controller/commands");
     this->declare_parameter<bool>("enable_visualization", false);
@@ -97,8 +98,9 @@ public:
     joint_damping_     = this->get_parameter("joint_damping").as_double();
     joint_stiffness_   = this->get_parameter("joint_stiffness").as_double();
     bearing_friction_  = this->get_parameter("bearing_friction").as_double();
-    coulomb_friction_  = this->get_parameter("coulomb_friction").as_double();
-    observer_gain_     = this->get_parameter("observer_gain").as_double();
+    coulomb_friction_         = this->get_parameter("coulomb_friction").as_double();
+    observer_gain_            = this->get_parameter("observer_gain").as_double();
+    velocity_observer_gain_   = this->get_parameter("velocity_observer_gain").as_double();
     effort_topic_      = this->get_parameter("effort_topic").as_string();
     enable_vis_        = this->get_parameter("enable_visualization").as_bool();
 
@@ -133,7 +135,9 @@ public:
         joint_state_topic_.c_str(), joint_name_.c_str());
     } else {
       // In parallel mode, subscribe to /joint_states to get the measured hardware position
-      // for the Luenberger observer correction (θ_corrected = θ_predicted + α·(θ_measured − θ_predicted))
+      // and velocity for the Luenberger observer correction:
+      //   θ_corrected = θ_predicted + α·(θ_measured − θ_predicted)
+      //   ω_corrected = ω_predicted + β·(ω_measured − ω_predicted)
       measured_joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
         joint_state_topic_,
         rclcpp::SensorDataQoS(),
@@ -144,13 +148,19 @@ public:
                 measured_position_ = msg->position[i];
                 have_measured_position_ = true;
               }
+              if (i < msg->velocity.size()) {
+                measured_velocity_ = msg->velocity[i];
+                have_measured_velocity_ = true;
+              }
               break;
             }
           }
         });
       RCLCPP_INFO(this->get_logger(),
-        "Parallel mode: subscribing to %s for observer correction (joint='%s', observer_gain=%.3f)",
-        joint_state_topic_.c_str(), joint_name_.c_str(), observer_gain_);
+        "Parallel mode: subscribing to %s for observer correction "
+        "(joint='%s', observer_gain=%.3f, velocity_observer_gain=%.3f)",
+        joint_state_topic_.c_str(), joint_name_.c_str(),
+        observer_gain_, velocity_observer_gain_);
     }
 
     // --- Parameter callbacks ---
@@ -166,10 +176,12 @@ public:
     RCLCPP_INFO(
       this->get_logger(),
       "ChronoFlapNode started [sil_mode=%s]: publish=%.0f Hz, solver=%.0f Hz (%d substeps), "
-      "flap=%.3fx%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f, coulomb=%.4f, observer_gain=%.3f",
+      "flap=%.3fx%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f, coulomb=%.4f, "
+      "observer_gain=%.3f, velocity_observer_gain=%.3f",
       sil_mode_ ? "true" : "false", rate_hz_, solver_rate_hz_, substeps_,
       flap_length_, flap_width_, flap_mass_,
-      joint_damping_, joint_stiffness_, bearing_friction_, coulomb_friction_, observer_gain_);
+      joint_damping_, joint_stiffness_, bearing_friction_, coulomb_friction_,
+      observer_gain_, velocity_observer_gain_);
   }
 
   void run()
@@ -216,18 +228,36 @@ public:
       sim_velocity_ = motor_link_->GetMotorAngleDt();
       // Luenberger observer correction (parallel mode only):
       //   θ_corrected = θ_predicted + α · (θ_measured − θ_predicted)
+      //   ω_corrected = ω_predicted + β · (ω_measured − ω_predicted)
       // This eliminates slow position drift caused by open-loop integration error
       // while preserving the fast transient dynamics predicted by Chrono.
-      if (!sil_mode_ && have_measured_position_ && observer_gain_ > 0.0) {
+      // The corrected state is also fed back into the Chrono body AND joint so that
+      // motor_link_->GetMotorAngle() and GetMotorAngleDt() return the corrected values
+      // on the next tick — ensuring the stiffness term (K·θ) uses the right angle.
+      const bool apply_position_correction =
+        !sil_mode_ && have_measured_position_ && observer_gain_ > 0.0;
+      const bool apply_velocity_correction =
+        !sil_mode_ && have_measured_velocity_ && velocity_observer_gain_ > 0.0;
+      if (apply_position_correction) {
         sim_position_ += observer_gain_ * (measured_position_ - sim_position_);
-        // Feed the corrected position back into the Chrono body state so the next
-        // integration step begins from the corrected angle rather than the raw prediction.
+      }
+      if (apply_velocity_correction) {
+        sim_velocity_ += velocity_observer_gain_ * (measured_velocity_ - sim_velocity_);
+      }
+      if (apply_position_correction || apply_velocity_correction) {
+        // Feed the corrected position and velocity back into the Chrono body so that
+        // the joint reads the corrected state on the next integration step.
+        // SetRot / SetPos update position; SetPosDt / SetAngVelParent update velocity.
         const double half_len = flap_length_ / 2.0;
+        const double ca = std::cos(sim_position_);
+        const double sa = std::sin(sim_position_);
         flap_->SetRot(QuatFromAngleY(sim_position_));
-        flap_->SetPos(ChVector3d(
-          half_len * std::sin(sim_position_),
-          0.0,
-          half_len * std::cos(sim_position_)));
+        flap_->SetPos(ChVector3d(half_len * sa, 0.0, half_len * ca));
+        // Linear velocity of CoM: d/dt [L/2·sin(θ), 0, L/2·cos(θ)] = L/2·[cos(θ)·ω, 0, -sin(θ)·ω]
+        flap_->SetPosDt(ChVector3d(half_len * ca * sim_velocity_, 0.0,
+                                   -half_len * sa * sim_velocity_));
+        // Angular velocity about the pivot (Y) axis in world frame
+        flap_->SetAngVelParent(ChVector3d(0.0, sim_velocity_, 0.0));
       }
       sim_acceleration_ = (sim_velocity_ - vel_before) / publish_dt_;
       publish_kinematics();
@@ -361,11 +391,11 @@ private:
           return result;
         }
       }
-      if (param.get_name() == "observer_gain") {
+      if (param.get_name() == "observer_gain" || param.get_name() == "velocity_observer_gain") {
         if (param.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE
             || param.as_double() < 0.0 || param.as_double() > 1.0) {
           result.successful = false;
-          result.reason = "observer_gain must be a double in [0.0, 1.0].";
+          result.reason = param.get_name() + " must be a double in [0.0, 1.0].";
           return result;
         }
       }
@@ -382,8 +412,9 @@ private:
       else if (param.get_name() == "joint_damping")    { joint_damping_ = param.as_double(); }
       else if (param.get_name() == "joint_stiffness")  { joint_stiffness_ = param.as_double(); }
       else if (param.get_name() == "bearing_friction") { bearing_friction_ = param.as_double(); }
-      else if (param.get_name() == "coulomb_friction")  { coulomb_friction_ = param.as_double(); }
-      else if (param.get_name() == "observer_gain")    { observer_gain_ = param.as_double(); }
+      else if (param.get_name() == "coulomb_friction")       { coulomb_friction_ = param.as_double(); }
+      else if (param.get_name() == "observer_gain")          { observer_gain_ = param.as_double(); }
+      else if (param.get_name() == "velocity_observer_gain") { velocity_observer_gain_ = param.as_double(); }
     }
     if (body_needs_update) {
       update_flap_inertia();
@@ -432,12 +463,13 @@ private:
   int         substeps_{10};
   double      flap_length_{0.30};
   double      flap_width_{0.30};
-  double      flap_mass_{0.5};
+  double      flap_mass_{0.21};
   double      joint_damping_{0.0};
   double      joint_stiffness_{0.712441};
   double      bearing_friction_{0.005};
   double      coulomb_friction_{0.0};
   double      observer_gain_{0.05};
+  double      velocity_observer_gain_{0.0};
   std::string effort_topic_{"/motor_effort_controller/commands"};
   bool        enable_vis_{false};
   bool        vis_active_{false};
@@ -448,7 +480,9 @@ private:
   double sim_acceleration_;
   // Observer state (parallel mode only)
   double measured_position_{0.0};
+  double measured_velocity_{0.0};
   bool   have_measured_position_{false};
+  bool   have_measured_velocity_{false};
   // Chrono objects
   std::unique_ptr<ChSystemNSC>                   sys_;
   std::shared_ptr<ChBody>                        ground_;

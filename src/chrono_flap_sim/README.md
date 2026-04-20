@@ -141,15 +141,18 @@ the identified parameters.
 In parallel mode, `chrono_flap_node` also subscribes to `/joint_states` (the real hardware
 measurements) and applies a **Luenberger observer correction** to prevent the simulated position
 from drifting away from reality over time. Each tick, after Chrono integrates, the predicted
-position is nudged toward the measured position:
+position and velocity are nudged toward the measured values:
 
 ```
 θ_corrected = θ_predicted + α · (θ_measured − θ_predicted)
+ω_corrected = ω_predicted + β · (ω_measured − ω_predicted)
 ```
 
-where `α` is the `observer_gain` parameter (default `0.05`). This preserves fast transient
-dynamics (which Chrono models well) while eliminating slow drift due to open-loop integration
-error. Set `observer_gain:=0.0` to disable the correction and run fully open-loop.
+where `α` is the `observer_gain` parameter (default `0.05`) and `β` is `velocity_observer_gain`
+(default `0.0`). The corrected state is fed back into the Chrono joint body so that the next
+integration step (including the stiffness term `K·θ`) uses the corrected values. This preserves
+fast transient dynamics (which Chrono models well) while eliminating slow drift due to open-loop
+integration error. Set `observer_gain:=0.0` to disable the correction and run fully open-loop.
 
 For a detailed theoretical explanation, see
 [`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md).
@@ -199,6 +202,7 @@ changed at runtime via `ros2 param set` or `rqt_reconfigure`.
 | `bearing_friction` | double | `0.4` | ✓ | Bearing friction at the unpowered ODrive (N·m·s/rad); identified test-bench value |
 | `coulomb_friction` | double | `0.0` | ✓ | Coulomb (dry) friction magnitude (N·m); constant braking force applied as `coulomb_friction * sign(ω)`. Models static/kinetic dry friction in bearings. |
 | `observer_gain` | double | `0.05` | ✓ | Luenberger observer gain α ∈ [0.0, 1.0] (parallel mode only). Each tick: `θ_corrected = θ_predicted + α·(θ_measured − θ_predicted)`. `0.0` = fully open-loop (will drift); `1.0` = snap to measurement each tick. See [`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md). |
+| `velocity_observer_gain` | double | `0.0` | ✓ | Luenberger velocity observer gain β ∈ [0.0, 1.0] (parallel mode only). Each tick: `ω_corrected = ω_predicted + β·(ω_measured − ω_predicted)`. Corrected velocity is fed back into the Chrono body so the stiffness term uses the right speed on the next tick. `0.0` = no velocity correction (default). See [`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md). |
 
 > **Identified values:** For the 30 cm × 30 cm acrylic flap on this test bench, the parameter
 > identification results are:
@@ -233,7 +237,7 @@ All `~/` topics are scoped under the node name (e.g. `/chrono_flap_node/sim_posi
 | Topic | Type | Condition | Description |
 |---|---|---|---|
 | `/motor_effort_controller/commands` | `std_msgs/Float64MultiArray` | Always | Torque input (N·m); first element used |
-| `/joint_states` | `sensor_msgs/JointState` | Parallel mode only (`sil_mode=false`) | Real hardware joint states; position of `joint_name` is used for the Luenberger observer correction |
+| `/joint_states` | `sensor_msgs/JointState` | Parallel mode only (`sil_mode=false`) | Real hardware joint states; position and velocity of `joint_name` are used for the Luenberger observer correction |
 
 ---
 
