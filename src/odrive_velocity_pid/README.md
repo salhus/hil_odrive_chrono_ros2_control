@@ -103,7 +103,7 @@ before enabling the full cascade.
 pos_ref → [position PID] → torque (clamped)
 ```
 
-### `cascade` (default — recommended for trajectory tracking)
+### `cascade` (recommended for trajectory tracking)
 
 Two-loop cascade: outer position PID feeds a velocity command to the inner velocity PID.
 Analytical velocity and acceleration derivatives of the sine trajectory are used as feedforwards
@@ -184,7 +184,7 @@ ros2 run rqt_reconfigure rqt_reconfigure
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `control_mode` | `string` | `cascade` | Active control mode: `position_only`, `cascade`, or `velocity_only`. |
+| `control_mode` | `string` | `position_only` | Active control mode: `position_only`, `cascade`, or `velocity_only`. |
 
 #### Inner loop (velocity PID)
 
@@ -194,7 +194,7 @@ ros2 run rqt_reconfigure rqt_reconfigure
 | `ki` | `double` | `0.01` | Integral gain |
 | `kd` | `double` | `0.0` | Derivative gain |
 | `kff` | `double` | `0.40` | Velocity feedforward gain — scales the velocity reference to produce anticipatory torque (compensates viscous friction / back-EMF). Suppressed when `kp = 0`. |
-| `kaff` | `double` | `0.0` | Acceleration feedforward gain — scales the acceleration reference to produce anticipatory torque (compensates rotor inertia, `kaff ≈ J`). Suppressed when `kp = 0`. |
+| `kaff` | `double` | `0.20` | Acceleration feedforward gain — scales the acceleration reference to produce anticipatory torque (compensates rotor inertia, `kaff ≈ J`). Suppressed when `kp = 0`. |
 | `torque_limit_nm` | `double` | `0.40` | Output torque saturation limit (N·m). Must be positive. |
 | `integral_limit` | `double` | `0.0` | Inner-loop integral accumulator clamp. `0.0` disables the integrator (falls back to default on startup if set to a non-positive value). Must be positive to take effect. |
 | `deadband_rad_s` | `double` | `0.0` | Velocity error deadband — errors smaller than this are treated as zero. |
