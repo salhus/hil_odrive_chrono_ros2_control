@@ -24,6 +24,7 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Chrono REQUIRED)
+find_package(odrive_velocity_pid REQUIRED)
 
 # Collect libraries
 list(APPEND LIBS Chrono_core)
@@ -119,6 +120,7 @@ ament_target_dependencies(chrono_flap_node
   rclcpp
   std_msgs
   sensor_msgs
+  odrive_velocity_pid
 )
 
 install(TARGETS chrono_flap_node

@@ -5,6 +5,12 @@ flap on a revolute joint. The node supports two operating modes — **SIL** (Sof
 no hardware required) and **parallel/shadow** (runs alongside real ODrive hardware for model
 validation) — and exposes all physical parameters for online reconfiguration via `rqt_reconfigure`.
 
+In parallel mode the node can optionally run an internal **shadow PID controller** that closes the
+simulation loop using `sim_position` / `sim_velocity` as feedback, mirroring the exact same
+cascade/position-only/velocity-only logic as `velocity_pid_node`.  This makes the simulation
+self-stabilising — any mismatch between sim and real is purely due to model error rather than
+open-loop instability.
+
 ---
 
 ## Overview
@@ -138,31 +144,38 @@ the hardware receives and integrates the equations of motion, publishing its pre
 `~/sim_*` topics. Compare these against real hardware measurements in PlotJuggler to validate
 the identified parameters.
 
-In parallel mode, `chrono_flap_node` also subscribes to `/joint_states` (the real hardware
-measurements) and applies a **Luenberger observer correction** to prevent the simulated position
-from drifting away from reality over time. Each tick, after Chrono integrates, the predicted
-position and velocity are nudged toward the measured values:
+#### Shadow PID mode (`use_shadow_pid:=true`, default)
 
-```
-θ_corrected = θ_predicted + α · (θ_measured − θ_predicted)
-ω_corrected = ω_predicted + β · (ω_measured − ω_predicted)
-```
+Instead of injecting the real controller torque open-loop into Chrono, the node runs an internal
+**shadow PID controller** that generates its own torque from `sim_position` / `sim_velocity`.
+This makes the simulation inherently closed-loop stable.  Any divergence from the real hardware
+trajectory indicates model error (mass, friction, stiffness) rather than open-loop instability.
 
-where `α` is the `observer_gain` parameter (default `0.05`) and `β` is `velocity_observer_gain`
-(default `0.0`). The corrected state is fed back into the Chrono joint body so that the next
-integration step (including the stiffness term `K·θ`) uses the corrected values. This preserves
-fast transient dynamics (which Chrono models well) while eliminating slow drift due to open-loop
-integration error. Set `observer_gain:=0.0` to disable the correction and run fully open-loop.
-
-For a detailed theoretical explanation, see
-[`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md).
+The shadow PID supports all three control modes (`position_only`, `cascade`, `velocity_only`) and
+generates the same sine trajectory as `velocity_pid_node`.  All gains are prefixed with
+`shadow_` to avoid collision with the real controller's parameters and are fully
+runtime-reconfigurable via `rqt_reconfigure`.
 
 ```
 ODrive HW ──/joint_states──▶ velocity_pid_node ──/motor_effort_controller/commands──▶ ODrive HW
-               │                                               │
-               │ (measured position for observer)              ▼
-               └──────────────────────────────▶ chrono_flap_node (sil_mode=false)
-                                                ~/sim_position, ~/sim_velocity, ~/sim_acceleration
+                                                               │ (also read by chrono_flap_node
+                                                               │  when use_shadow_pid=false)
+                             chrono_flap_node (sil_mode=false, use_shadow_pid=true)
+                               shadow PID ──▶ Chrono plant (closed-loop)
+                               ~/sim_position, ~/sim_velocity, ~/sim_acceleration, ~/shadow_torque
+```
+
+#### Open-loop mode (`use_shadow_pid:=false`)
+
+The torque command received from the real controller is injected directly into Chrono.
+This is the legacy behaviour.
+
+```
+ODrive HW ──▶ velocity_pid_node ──/motor_effort_controller/commands──▶ ODrive HW
+                                                │
+                                                ▼
+                              chrono_flap_node (use_shadow_pid=false)
+                              ~/sim_position, ~/sim_velocity, ~/sim_acceleration
 ```
 
 **Typical launch (via launch file):**
@@ -196,20 +209,63 @@ changed at runtime via `ros2 param set` or `rqt_reconfigure`.
 | `enable_visualization` | bool | `false` | ✗ | Enable Chrono 3D visualization window (requires a Chrono build with VSG or Irrlicht support) |
 | `flap_length_m` | double | `0.30` | ✓ | Flap height/length (m); updates pivot-to-CoM distance and inertia |
 | `flap_width_m` | double | `0.30` | ✓ | Flap width (m); updates inertia tensor |
-| `flap_mass_kg` | double | `0.5` | ✓ | Flap mass (kg); identified value from parameter ID |
+| `flap_mass_kg` | double | `0.21` | ✓ | Flap mass (kg) |
 | `joint_damping` | double | `0.0` | ✓ | Viscous damping at the powered ODrive joint (N·m·s/rad) |
 | `joint_stiffness` | double | `0.712441` | ✓ | Restoring spring stiffness (N·m/rad); identified value from parameter ID |
 | `bearing_friction` | double | `0.4` | ✓ | Bearing friction at the unpowered ODrive (N·m·s/rad); identified test-bench value |
-| `coulomb_friction` | double | `0.0` | ✓ | Coulomb (dry) friction magnitude (N·m); constant braking force applied as `coulomb_friction * sign(ω)`. Models static/kinetic dry friction in bearings. |
-| `observer_gain` | double | `0.05` | ✓ | Luenberger observer gain α ∈ [0.0, 1.0] (parallel mode only). Each tick: `θ_corrected = θ_predicted + α·(θ_measured − θ_predicted)`. `0.0` = fully open-loop (will drift); `1.0` = snap to measurement each tick. See [`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md). |
-| `velocity_observer_gain` | double | `0.0` | ✓ | Luenberger velocity observer gain β ∈ [0.0, 1.0] (parallel mode only). Each tick: `ω_corrected = ω_predicted + β·(ω_measured − ω_predicted)`. Corrected velocity is fed back into the Chrono body so the stiffness term uses the right speed on the next tick. `0.0` = no velocity correction (default). See [`doc/parallel_mode_observer.md`](doc/parallel_mode_observer.md). |
+| `coulomb_friction` | double | `0.0` | ✓ | Coulomb (dry) friction magnitude (N·m); constant braking force applied as `coulomb_friction * sign(ω)`. |
+| `use_shadow_pid` | bool | `true` | ✓ | Use the internal closed-loop shadow PID to drive Chrono (`true`) or inject the real controller torque open-loop (`false`) |
+
+### Shadow PID parameters
+
+All `shadow_*` parameters are runtime-reconfigurable. Set them to match the real controller's
+gains so the sim uses identical control logic.
+
+#### Trajectory
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `shadow_control_mode` | string | `position_only` | Active control mode: `position_only`, `cascade`, or `velocity_only` |
+| `shadow_position_setpoint` | double | `0.0` | Base position offset (rad) |
+| `shadow_amplitude_rad_s` | double | `0.0` | Sine velocity amplitude (rad/s) |
+| `shadow_omega_rad_s` | double | `0.0` | Sine angular frequency (rad/s) |
+
+#### Inner loop (velocity PID)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `shadow_kp` | double | `0.35` | Proportional gain |
+| `shadow_ki` | double | `0.01` | Integral gain |
+| `shadow_kd` | double | `0.00` | Derivative gain |
+| `shadow_kff` | double | `0.40` | Velocity feedforward gain |
+| `shadow_kaff` | double | `0.20` | Acceleration feedforward gain |
+| `shadow_torque_limit_nm` | double | `0.40` | Symmetric torque output clamp (N·m) |
+| `shadow_integral_limit` | double | `0.00` | Integral accumulator clamp (0 = unlimited) |
+| `shadow_deadband_rad_s` | double | `0.00` | Velocity error deadband (rad/s) |
+
+#### Outer loop (position PID, cascade mode only)
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `shadow_kp_pos` | double | `2.00` | Proportional gain |
+| `shadow_ki_pos` | double | `0.01` | Integral gain |
+| `shadow_kd_pos` | double | `0.025` | Derivative gain |
+| `shadow_pos_integral_limit` | double | `1.00` | Integral accumulator clamp |
+| `shadow_pos_output_limit` | double | `2.00` | Velocity command output clamp (rad/s) |
+
+#### Misc
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `shadow_outer_loop_divider` | double | `1.0` | Run outer position loop every N inner ticks |
+| `shadow_filter_alpha` | double | `0.90` | IIR velocity filter coefficient in [0.0, 1.0) |
 
 > **Identified values:** For the 30 cm × 30 cm acrylic flap on this test bench, the parameter
 > identification results are:
 >
 > | Parameter | Default (code) | Identified hardware value |
 > |---|---|---|
-> | `flap_mass_kg` | `0.5` | 0.5 kg |
+> | `flap_mass_kg` | `0.21` | 0.21 kg |
 > | `joint_stiffness` | `0.712441` | 0.712441 N·m/rad |
 > | `bearing_friction` | `0.4` | **0.2 N·m·s/rad** |
 > | `joint_damping` | `0.0` | 0.0 N·m·s/rad |
@@ -227,6 +283,7 @@ changed at runtime via `ros2 param set` or `rqt_reconfigure`.
 | `~/sim_position` | `std_msgs/Float64` | Always | Simulated joint angle (rad) |
 | `~/sim_velocity` | `std_msgs/Float64` | Always | Simulated joint angular velocity (rad/s) |
 | `~/sim_acceleration` | `std_msgs/Float64` | Always | Simulated joint angular acceleration (rad/s²) |
+| `~/shadow_torque` | `std_msgs/Float64` | Always | Torque command applied to Chrono (shadow PID output when `use_shadow_pid=true`, else `0.0`) |
 
 All `~/` topics are scoped under the node name (e.g. `/chrono_flap_node/sim_position`).
 
@@ -236,8 +293,7 @@ All `~/` topics are scoped under the node name (e.g. `/chrono_flap_node/sim_posi
 
 | Topic | Type | Condition | Description |
 |---|---|---|---|
-| `/motor_effort_controller/commands` | `std_msgs/Float64MultiArray` | Always | Torque input (N·m); first element used |
-| `/joint_states` | `sensor_msgs/JointState` | Parallel mode only (`sil_mode=false`) | Real hardware joint states; position and velocity of `joint_name` are used for the Luenberger observer correction |
+| `/motor_effort_controller/commands` | `std_msgs/Float64MultiArray` | Always | Torque input from real controller (N·m); used when `use_shadow_pid=false` |
 
 ---
 
@@ -250,9 +306,10 @@ compare the Chrono shadow prediction against real measurements:
 |---|---|---|
 | `/chrono_flap_node/sim_position` | `/velocity_pid_node/measured_position` | Joint angle (rad) |
 | `/chrono_flap_node/sim_velocity` | `/velocity_pid_node/measured_velocity` | Joint velocity (rad/s) |
+| `/chrono_flap_node/shadow_torque` | `/velocity_pid_node/` (torque pub) | Torque commands (compare when `use_shadow_pid=true`) |
 
-If the traces track closely, the identified parameters are a good model of the plant. Divergence
-indicates where the model needs refinement (e.g. unmodelled friction, structural flexibility).
+When `use_shadow_pid=true`, divergence in position/velocity traces indicates model error
+(inertia, friction, stiffness) rather than open-loop instability — much easier to diagnose.
 
 ---
 
@@ -261,17 +318,18 @@ indicates where the model needs refinement (e.g. unmodelled friction, structural
 - [Project Chrono](https://projectchrono.org) — core library (`ChronoEngine`).
   Optional: VSG (`Chrono_vsg`) or Irrlicht (`Chrono_irrlicht`) module for 3D visualization.
 - ROS 2 Jazzy (or compatible).
+- `odrive_velocity_pid` package (provides `pid_controller.hpp`; built as a sibling package).
 
 ---
 
 ## Building
 
 ```bash
-# Headless (core Chrono only — always works):
-colcon build --packages-select chrono_flap_sim
+# Build both packages (odrive_velocity_pid provides pid_controller.hpp):
+colcon build --packages-select odrive_velocity_pid chrono_flap_sim
 
 # With VSG visualization (if Chrono was built with VSG support):
-colcon build --packages-select chrono_flap_sim \
+colcon build --packages-select odrive_velocity_pid chrono_flap_sim \
   --cmake-args -DCMAKE_PREFIX_PATH=/path/to/chrono/install
 ```
 
@@ -279,4 +337,3 @@ colcon build --packages-select chrono_flap_sim \
 appropriate compile definition (`CHRONO_VSG` or `CHRONO_IRRLICHT`). If neither is found, the node
 builds without visualization support; attempting `enable_visualization:=true` at runtime will log
 a warning and continue headlessly.
-

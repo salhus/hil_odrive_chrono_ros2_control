@@ -31,4 +31,10 @@ install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
 )
 
+# Export the include directory so other packages can use pid_controller.hpp
+install(DIRECTORY include/
+  DESTINATION include
+)
+ament_export_include_directories(include)
+
 ament_package()
