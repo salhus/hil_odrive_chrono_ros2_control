@@ -30,6 +30,8 @@ It is designed so you can:
 
 Both motors share the same ODrive board and CAN bus (`can0`). The second joint (`pto_joint`) is registered inside the same `<ros2_control name="ODriveSystem">` hardware block in the URDF.
 
+> **Note:** `pto_joint` (axis1) is shown above for conceptual completeness. It is currently **commented out** in `motor.urdf.xacro` and the `pto_effort_controller` spawner has been removed from the launch file. Only `motor_joint` (axis0) is active in the current configuration.
+
 ---
 
 ## What's in this repo
@@ -37,11 +39,12 @@ Both motors share the same ODrive board and CAN bus (`can0`). The second joint (
 ### Packages
 
 - **`hil_odrive_ros2_control`** (root package)
-  - Purpose: installs the launch file, controller YAML, and URDF/Xacro for `motor_joint` (axis0) and `pto_joint` (axis1)
+  - Purpose: installs the launch file, controller YAML, and URDF/Xacro for `motor_joint` (axis0). `pto_joint` (axis1) is defined in the URDF but currently commented out.
   - Key paths:
     - `launch/motor_control.launch.py`
     - `config/controllers.yaml`
-    - `description/urdf/motor.urdf.xacro`
+    - `description/urdf/motor.urdf.xacro` (real hardware — blue flap)
+    - `description/urdf/motor_sim.urdf.xacro` (sim overlay — orange semi-transparent flap, different material names to work around RViz2 resource-sharing bug)
 
 - **`odrive_velocity_pid`** (package)
   - Purpose: reads measured velocity from `/joint_states`, tracks a sine-wave reference velocity for `motor_joint`, runs a PID loop, and publishes torque (effort) commands
@@ -63,22 +66,29 @@ See [`VENDORED.md`](VENDORED.md) for provenance and licensing details.
 
 1. **`ros2_control_node`** (from `controller_manager`)
    - loads the ODrive hardware plugin declared in the URDF
-   - exposes ros2_control state and command interfaces for `motor_joint` (axis0) and `pto_joint` (axis1)
+   - exposes ros2_control state and command interfaces for `motor_joint` (axis0)
 
 2. **`joint_state_broadcaster`**
    - publishes `sensor_msgs/msg/JointState` on `/joint_states`
-   - provides measured velocity feedback for both joints
+   - provides measured position and velocity feedback for `motor_joint`
 
 3. **`motor_effort_controller`**
    - accepts `std_msgs/msg/Float64MultiArray` commands on `/motor_effort_controller/commands`
    - forwards them to the ros2_control effort command interface for `motor_joint`
 
-4. **`pto_effort_controller`**
-   - accepts `std_msgs/msg/Float64MultiArray` commands on `/pto_effort_controller/commands`
-   - forwards them to the ros2_control effort command interface for `pto_joint`
-   - In Phase 1 this controller is spawned but not actively commanded from ROS — the ODrive's onboard velocity controller handles passive damping on axis1
+4. **`robot_state_publisher`** (real hardware)
+   - loads `motor.urdf.xacro`, publishes `/robot_description`
+   - drives the `base_link` / `motor_link` TF tree from `/joint_states`
 
-5. **`odrive_velocity_pid/velocity_pid_node`**
+5. **`sim_robot_state_publisher`** (namespace `sim`)
+   - loads `motor_sim.urdf.xacro` (orange semi-transparent flap), publishes `/sim/robot_description`
+   - drives the `sim/base_link` / `sim/motor_link` TF tree from `/sim_joint_states`
+
+6. **`static_transform_publisher`**
+   - publishes an identity transform from `base_link` → `sim/base_link` (zero offset)
+   - overlays the sim TF tree exactly on top of the real hardware TF tree
+
+7. **`odrive_velocity_pid/velocity_pid_node`**
    - a **standalone ROS 2 node** (not a ros2_control controller plugin)
    - subscribes to `/joint_states`
    - extracts measured position and velocity for `motor_joint`
@@ -88,12 +98,16 @@ See [`VENDORED.md`](VENDORED.md) for provenance and licensing details.
      **accel_ref(t) = A·ω·cos(ω·t)**
    - runs a cascaded PID (configurable mode: `position_only`, `cascade`, or `velocity_only`)
    - publishes torque command as `std_msgs/msg/Float64MultiArray` to `/motor_effort_controller/commands`
+   - also publishes `~/position_command` and `~/velocity_command` for shadow PID synchronisation
 
-6. **`chrono_flap_sim/chrono_flap_node`** (included in `motor_control.launch.py`)
+8. **`chrono_flap_sim/chrono_flap_node`** (included in `motor_control.launch.py`)
    - runs a Project Chrono inverted-pendulum flap simulation in **parallel/shadow** mode by default
    - subscribes to `/motor_effort_controller/commands` and integrates the equations of motion
    - publishes `~/sim_position`, `~/sim_velocity`, `~/sim_acceleration` for model validation
-   - does **not** publish `/joint_states` in parallel mode (the real ODrive owns that topic)
+   - publishes `/sim_joint_states` (`motor_joint` only) for the sim `robot_state_publisher` → RViz overlay
+   - runs an internal **shadow PID** that subscribes to `~/position_command` and `~/velocity_command`
+     from `velocity_pid_node` (`shadow_sync_trajectory=true` by default) so both hardware and sim
+     track the same reference automatically
    - see [`src/chrono_flap_sim/README.md`](../chrono_flap_sim/README.md) for the full physics model and parameter reference
 
 ### Data flow summary
@@ -101,9 +115,10 @@ See [`VENDORED.md`](VENDORED.md) for provenance and licensing details.
 ```
 /joint_states (position + velocity) → velocity_pid_node → /motor_effort_controller/commands (effort) → effort controller → ODrive ros2_control hardware plugin → CAN → ODrive axis0 (motor_joint)
 
-ODrive axis1 (pto_joint) ← passive damping τ = -B·ω configured via odrivetool
+velocity_pid_node → ~/position_command, ~/velocity_command → chrono_flap_node (shadow PID sync)
 
 /motor_effort_controller/commands → chrono_flap_node (parallel mode) → ~/sim_position, ~/sim_velocity
+                                                                      → /sim_joint_states → sim_robot_state_publisher (sim/) → RViz overlay
 ```
 
 Note: `velocity_pid_node` is a standalone node — it is **not** a ros2_control controller plugin.
@@ -192,16 +207,11 @@ Key parameters:
 <joint name="motor_joint">
   <param name="node_id">0</param>
 </joint>
-
-<!-- Motor 2: PTO passive damper (ODrive axis1) -->
-<joint name="pto_joint">
-  <param name="node_id">1</param>
-</joint>
 ```
 
 Make sure:
 - your SocketCAN interface is actually `can0` (or change it)
-- ODrive `node_id=0` is axis0 (hydro emulator) and `node_id=1` is axis1 (PTO)
+- ODrive `node_id=0` is axis0 (hydro emulator)
 
 ---
 
@@ -293,11 +303,12 @@ ros2 launch hil_odrive_ros2_control motor_control.launch.py
 
 This launch file starts:
 - `ros2_control_node`
-- `robot_state_publisher`
+- `robot_state_publisher` (real hardware, `/robot_description`)
+- `sim_robot_state_publisher` (namespace `sim`, `/sim/robot_description`, loads `motor_sim.urdf.xacro`)
+- `static_transform_publisher` (identity: `base_link` → `sim/base_link`)
 - spawns/activates:
   - `joint_state_broadcaster`
   - `motor_effort_controller` (Motor 1, hydro emulator)
-  - `pto_effort_controller` (Motor 2, PTO — spawned but passively controlled by ODrive in Phase 1)
 - `velocity_pid_node` (cascade mode, `amplitude_rad_s=0.25`, `omega_rad_s=0.25`)
 - `chrono_flap_node` (parallel/shadow mode by default)
 
@@ -323,17 +334,16 @@ ros2 launch hil_odrive_ros2_control motor_control.launch.py enable_visualization
 ros2 control list_controllers
 ```
 
-You want all three of these to show as `active`:
+You want both of these to show as `active`:
 - `joint_state_broadcaster`
 - `motor_effort_controller`
-- `pto_effort_controller`
 
 ### Check hardware interfaces
 ```bash
 ros2 control list_hardware_interfaces
 ```
 
-Look for both `motor_joint` and `pto_joint` interfaces, including state interfaces for
+Look for `motor_joint` interfaces, including state interfaces for
 `position`, `velocity`, `effort`, `electrical_power`, and `mechanical_power`.
 
 ### Check feedback stream
@@ -342,8 +352,8 @@ ros2 topic echo /joint_states --once
 ```
 
 Confirm:
-- Both `motor_joint` and `pto_joint` appear in `name: [...]`
-- `velocity: [...]` has sensible values (not NaN) for both joints
+- `motor_joint` appears in `name: [...]`
+- `velocity: [...]` has a sensible value (not NaN)
 
 ### Check power telemetry
 ```bash
@@ -467,7 +477,7 @@ ros2 control list_hardware_interfaces
 ```
 
 Fix:
-- make sure `motor_effort_controller` and `pto_effort_controller` are `active` (spawner should do this)
+- make sure `motor_effort_controller` is `active` (spawner should do this)
 - verify controller manager is running and reachable at `/controller_manager`
 
 ### 4) Effort controller type not available
@@ -483,15 +493,7 @@ Fix:
 - install `ros-jazzy-ros2-controllers` (or equivalent)
 - update `config/controllers.yaml` to use an effort controller type that exists on your system
 
-### 5) `pto_joint` missing from `/joint_states`
-Symptoms:
-- `/joint_states` publishes but `pto_joint` isn't present
-
-Fix:
-- confirm axis1 on the ODrive is calibrated and set to `CLOSED_LOOP_CONTROL` via `odrivetool`
-- check `ros2_control_node` logs for hardware/plugin load errors for `node_id=1`
-
-### 6) ODrive not in a state that accepts torque commands
+### 5) ODrive not in a state that accepts torque commands
 Symptoms:
 - feedback exists but motor does not move/respond
 

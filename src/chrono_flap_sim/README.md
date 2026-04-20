@@ -127,9 +127,9 @@ In RViz:
 2. **Add** → **RobotModel** → set **Description Source** to "Topic" and **Description Topic** to `/robot_description`
 3. **Add** → **TF** (optional, to see frame axes)
 
-The URDF includes visual geometry for all three links: grey `base_link` cube, blue translucent
+The URDF includes visual geometry for two links: grey `base_link` cube and blue translucent
 `motor_link` flap (0.0025 m thick × 0.30 m wide × 0.30 m tall, swings in the XZ plane about
-the Y axis with the pivot at the bottom edge), and orange `pto_link` cylinder.
+the Y axis with the pivot at the bottom edge).
 
 ### Alternative: manual launch (two terminals)
 
@@ -314,8 +314,8 @@ trajectory parameters on `velocity_pid_node` only.
 
 | Topic | Type | Condition | Description |
 |---|---|---|---|
-| `/joint_states` | `sensor_msgs/JointState` | SIL mode only (`sil_mode=true`) | Simulated joint position and velocity for both `motor_joint` and `pto_joint` (pto_joint is published with zero position/velocity/effort); replaces `joint_state_broadcaster`, enabling `robot_state_publisher` to compute TFs for all links |
-| `/sim_joint_states` | `sensor_msgs/JointState` | Parallel mode only (`sil_mode=false`) | Simulated joint positions for both `motor_joint` and `pto_joint`; consumed by the second `robot_state_publisher` with `frame_prefix='sim/'` to drive the sim TF tree for RViz overlay |
+| `/joint_states` | `sensor_msgs/JointState` | SIL mode only (`sil_mode=true`) | Simulated joint position and velocity for `motor_joint`; replaces `joint_state_broadcaster`, enabling `robot_state_publisher` to compute TFs |
+| `/sim_joint_states` | `sensor_msgs/JointState` | Parallel mode only (`sil_mode=false`) | Simulated joint position for `motor_joint` only; consumed by the second `robot_state_publisher` (namespace `sim`, `frame_prefix='sim/'`) to drive the sim TF tree for RViz overlay |
 | `~/sim_position` | `std_msgs/Float64` | Always | Simulated joint angle (rad) |
 | `~/sim_velocity` | `std_msgs/Float64` | Always | Simulated joint angular velocity (rad/s) |
 | `~/sim_acceleration` | `std_msgs/Float64` | Always | Simulated joint angular acceleration (rad/s²) |
@@ -338,19 +338,25 @@ All `~/` topics are scoped under the node name (e.g. `/chrono_flap_node/sim_posi
 ## Dual RViz flap overlay (parallel mode)
 
 When running in parallel mode, `motor_control.launch.py` starts a second `robot_state_publisher`
-with `frame_prefix='sim/'` that subscribes to `/sim_joint_states`.  This creates a second TF
-tree under the `sim/` prefix that mirrors the Chrono simulation.
+(in the `sim` namespace) that loads `motor_sim.urdf.xacro` (orange semi-transparent flap) and
+subscribes to `/sim_joint_states`. A `static_transform_publisher` publishes an identity transform
+from `base_link` → `sim/base_link`, overlaying the sim TF tree exactly on the real hardware tree.
+
+> **RViz2 quirk:** Two RobotModel displays with identical URDFs share internal mesh/material
+> resources and the second one won't render visuals. That is why `motor_sim.urdf.xacro` uses
+> different material names (orange, semi-transparent) — it is otherwise identical geometry.
 
 To see both flaps in RViz simultaneously:
 
 1. Launch the full hardware stack: `ros2 launch hil_odrive_ros2_control motor_control.launch.py`
 2. Open RViz2 and set **Fixed Frame** to `base_link`
-3. Add **two** `RobotModel` displays:
-   - First display — no TF prefix → real hardware flap (blue)
-   - Second display — set **TF Prefix** to `sim` → Chrono simulation flap (orange)
-4. Add a **TF** display (optional) to see all frame axes
+3. Add first **RobotModel** display:
+   - Description Topic = `/robot_description`, no TF Prefix → real hardware flap (blue)
+4. Add second **RobotModel** display:
+   - Description Topic = `/sim/robot_description`, TF Prefix = `sim/`, Alpha = 0.5 → Chrono sim flap (orange)
+5. Add a **TF** display (optional) to see all frame axes (`motor_link`, `sim/motor_link`, etc.)
 
-When the sim model is accurate the two flaps overlap.  When they diverge, you can see the error
+When the sim model is accurate the two flaps overlap. When they diverge, you can see the error
 visually — useful for model validation and presentations.
 
 ---

@@ -83,9 +83,9 @@ In RViz:
 2. **Add** → **RobotModel** → set **Description Source** to "Topic" and **Description Topic** to `/robot_description`
 3. **Add** → **TF** (optional, to see frame axes)
 
-The URDF includes visual geometry for all three links: grey `base_link` cube, blue translucent
+The URDF includes visual geometry for two links: grey `base_link` cube and blue translucent
 `motor_link` flap (0.0025 m thick × 0.30 m wide × 0.30 m tall, swings in the XZ plane about
-the Y axis), and orange `pto_link` cylinder.
+the Y axis with the pivot at the bottom edge).
 
 ### Alternative: manual launch (two terminals)
 
@@ -142,6 +142,8 @@ ros2 run chrono_flap_sim chrono_flap_node --ros-args -p bearing_friction:=0.4
 
 Both motors are on the **same ODrive board** (`can0`). axis0 = `node_id=0` (hydro emulator), axis1 = `node_id=1` (PTO).
 
+> **Note:** `pto_joint` (axis1) is shown above for conceptual completeness. It is currently **commented out** in `motor.urdf.xacro` and the `pto_effort_controller` spawner has been removed from the launch file. Only `motor_joint` (axis0) is active in the current configuration.
+
 ---
 
 ## Repository structure
@@ -157,7 +159,7 @@ hil_odrive_ros2_control/
 ```
 
 - **`src/chrono_flap_sim/`** — Project Chrono inverted-pendulum flap simulation; runs as SIL plant or parallel shadow for model validation
-- **`src/hil_odrive_ros2_control/`** — launch file (`motor_control.launch.py`), controller YAML (`config/controllers.yaml`), and URDF/Xacro (`description/urdf/motor.urdf.xacro`) for `motor_joint` (axis0) and `pto_joint` (axis1)
+- **`src/hil_odrive_ros2_control/`** — launch file (`motor_control.launch.py`), controller YAML (`config/controllers.yaml`), and URDF/Xacro (`description/urdf/motor.urdf.xacro` for real hardware, `motor_sim.urdf.xacro` for the orange sim overlay) for `motor_joint` (axis0). `pto_joint` (axis1) is defined in the URDF/Xacro but currently commented out.
 - **`src/odrive_velocity_pid/`** — velocity PID + feedforward node that reads `/joint_states`, generates a sinusoidal velocity reference, and publishes torque commands for Motor 1
 - **`src/odrive_base/`** and **`src/odrive_ros2_control/`** — ODrive `ros2_control` hardware interface plugin and its base library, sourced from the upstream [`odriverobotics/ros_odrive`](https://github.com/odriverobotics/ros_odrive) repository
 
@@ -221,7 +223,7 @@ source install/setup.bash
 ros2 launch hil_odrive_ros2_control motor_control.launch.py
 ```
 
-This starts `ros2_control_node`, `robot_state_publisher`, `joint_state_broadcaster`, `motor_effort_controller`, and `pto_effort_controller`.
+This starts `ros2_control_node`, `robot_state_publisher`, `sim_robot_state_publisher` (namespace `sim`, loads `motor_sim.urdf.xacro`), `static_transform_publisher` (identity: `base_link` → `sim/base_link`), `joint_state_broadcaster`, `motor_effort_controller`, `velocity_pid_node`, and `chrono_flap_node`.
 
 ---
 
@@ -232,7 +234,7 @@ ros2 control list_controllers
 ros2 topic echo /joint_states --once
 ```
 
-`joint_state_broadcaster`, `motor_effort_controller`, and `pto_effort_controller` should all show as **active**. The `/joint_states` message should contain both `motor_joint` and `pto_joint` with valid (non-NaN) velocities.
+`joint_state_broadcaster` and `motor_effort_controller` should both show as **active**. The `/joint_states` message should contain `motor_joint` with a valid (non-NaN) velocity.
 
 > **Power telemetry:** The `electrical_power` and `mechanical_power` state interfaces are also available but will read NaN until you configure the ODrive to broadcast `Get_Powers` messages. See the [ODrive CAN broadcast setup](#pto-motor-configuration-phase-1--passive-linear-damper) section for the required `get_powers_msg_rate_ms` configuration step. Power values appear on the `/dynamic_joint_states` topic (not `/joint_states`):
 > ```bash
@@ -363,6 +365,37 @@ ros2 run rqt_reconfigure rqt_reconfigure
 This opens `rqt_reconfigure`, where you can refresh the parameter list and select
 `velocity_pid_node` or `chrono_flap_node` to access and change reconfigurable parameters at runtime.
 
+### Dual RViz flap overlay (parallel mode)
+
+In parallel mode, `motor_control.launch.py` starts a second `robot_state_publisher` (in the `sim`
+namespace) that loads `motor_sim.urdf.xacro` (orange semi-transparent flap) and subscribes to
+`/sim_joint_states` published by `chrono_flap_node`. A `static_transform_publisher` publishes an
+identity transform from `base_link` → `sim/base_link` so the sim flap is overlaid exactly on the
+real flap.
+
+To see both flaps simultaneously:
+
+1. Launch: `ros2 launch hil_odrive_ros2_control motor_control.launch.py`
+2. Open RViz2, set **Fixed Frame** to `base_link`
+3. **Add** → **RobotModel** → Description Topic = `/robot_description`, no TF Prefix → real hardware flap (blue)
+4. **Add** → **RobotModel** → Description Topic = `/sim/robot_description`, TF Prefix = `sim/`, Alpha = 0.5 → Chrono sim flap (orange)
+5. **Add** → **TF** (optional) to see frame axes (`motor_link`, `sim/motor_link`, etc.)
+
+When the sim model is accurate the two flaps overlap. Divergence = model error.
+
+> **RViz2 quirk:** Two RobotModel displays with identical URDFs share internal mesh/material
+> resources and the second won't render visuals. That is why `motor_sim.urdf.xacro` uses
+> different material names (orange, semi-transparent) — it is otherwise identical geometry.
+
+### `shadow_sync_trajectory` (parallel mode)
+
+In parallel mode, `chrono_flap_node` runs an internal **shadow PID** that mirrors the real
+controller's trajectory. With `shadow_sync_trajectory=true` (the default), the shadow PID
+subscribes to `/velocity_pid_node/position_command` and `/velocity_pid_node/velocity_command` for
+its reference — so you only set the trajectory in one place and both hardware and simulation track
+the same reference automatically. See [`src/chrono_flap_sim/README.md`](src/chrono_flap_sim/README.md)
+for full details.
+
 ---
 
 ## Data flow
@@ -383,8 +416,10 @@ ODrive HW → /joint_states → velocity_pid_node → /motor_effort_controller/c
                │ (measured position for observer)              ▼
                └──────────────────────────────▶ chrono_flap_node (sil_mode=false)
                                                 ~/sim_position, ~/sim_velocity, ~/sim_acceleration
+                                                ~/position_command, ~/velocity_command → chrono_flap_node (shadow PID sync)
+                                                /sim_joint_states → sim_robot_state_publisher (sim/) → RViz overlay
 
-ODrive axis1 (pto_joint) ← passive damping configured via odrivetool (τ = -B·ω)
+ODrive axis1 (pto_joint) ← passive damping configured via odrivetool (τ = -B·ω) [currently commented out in URDF]
 
 CAN → ODrive HW plugin → electrical_power, mechanical_power state interfaces → /dynamic_joint_states
 ```
@@ -495,7 +530,6 @@ ros2 run chrono_flap_sim chrono_flap_node --ros-args \
 | Motor not moving | `torque_limit_nm` too low to overcome friction | Increase `torque_limit_nm` |
 | `/joint_states` has NaN velocity | Wrong ODrive node ID in URDF | Update `node_id` in `description/urdf/motor.urdf.xacro` |
 | Controller type not found | `ros-jazzy-ros2-controllers` not installed | `sudo apt-get install ros-jazzy-ros2-controllers` |
-| `pto_joint` missing from `/joint_states` | axis1 not calibrated/active on ODrive | Calibrate axis1 via `odrivetool` and set to `CLOSED_LOOP_CONTROL` |
 
 ---
 
