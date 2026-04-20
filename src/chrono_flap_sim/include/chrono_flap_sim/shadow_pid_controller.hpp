@@ -167,6 +167,8 @@ private:
   {
     double pid_out = vel_pid_.compute(vel_setpoint, filtered_vel_, dt);
 
+    // Feedforward is only safe when kp > 0 provides damping feedback.
+    // Without feedback, kff/kaff inject open-loop torque that can cause runaway.
     double ff = 0.0;
     if (kp > 0.0) {
       ff = kff * vel_setpoint + kaff * accel_ff;
