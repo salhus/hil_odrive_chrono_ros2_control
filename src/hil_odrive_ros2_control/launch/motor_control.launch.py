@@ -80,11 +80,6 @@ def generate_launch_description():
         package="odrive_velocity_pid",
         executable="velocity_pid_node",
         name="velocity_pid_node",
-        parameters=[{
-            "control_mode": "cascade",
-            "amplitude_rad_s": 0.25,
-            "omega_rad_s": 0.25,
-        }],
         output="both",
     )
 
