@@ -92,21 +92,23 @@
     </joint>
 
     <!-- Motor 2: PTO / Power Take-Off (ODrive axis1, node_id=1) -->
+    <!-- Commented out: pto_link/pto_joint kinematic elements are commented out above,
+         so ros2_control cannot reference it either (controller_manager would crash). -->
+    <!--
     <joint name="pto_joint">
       <param name="node_id">1</param>
 
-      <!-- Command interfaces the hardware plugin exports -->
       <command_interface name="effort"/>
       <command_interface name="velocity"/>
       <command_interface name="position"/>
 
-      <!-- State interfaces the hardware plugin exports -->
       <state_interface name="effort"/>
       <state_interface name="velocity"/>
       <state_interface name="position"/>
       <state_interface name="electrical_power"/>
       <state_interface name="mechanical_power"/>
     </joint>
+    -->
   </ros2_control>
 
 </robot>

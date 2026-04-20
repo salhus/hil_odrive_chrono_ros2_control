@@ -78,13 +78,6 @@ def generate_launch_description():
         output="both",
     )
 
-    pto_controller_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["pto_effort_controller", "--controller-manager", "/controller_manager"],
-        output="both",
-    )
-
     velocity_pid_node = Node(
         package="odrive_velocity_pid",
         executable="velocity_pid_node",
@@ -116,7 +109,6 @@ def generate_launch_description():
             sim_robot_state_pub_node,
             joint_state_broadcaster_spawner,
             effort_controller_spawner,
-            pto_controller_spawner,
             velocity_pid_node,
             chrono_flap_node,
             static_tf_sim,
