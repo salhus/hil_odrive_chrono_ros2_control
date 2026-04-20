@@ -70,6 +70,7 @@ def generate_launch_description():
         package="robot_state_publisher",
         executable="robot_state_publisher",
         name="sim_robot_state_publisher",
+        namespace="sim",
         parameters=[sim_robot_description, {"frame_prefix": "sim/"}],
         remappings=[("joint_states", "/sim_joint_states")],
         output="both",
