@@ -78,6 +78,8 @@ public:
     this->declare_parameter<double>("joint_damping", 0.0);
     this->declare_parameter<double>("joint_stiffness", 0.712441);
     this->declare_parameter<double>("bearing_friction", 0.4);
+    // Observer correction (parallel mode only)
+    this->declare_parameter<double>("observer_gain", 0.05);
     // ROS interface
     this->declare_parameter<std::string>("effort_topic", "/motor_effort_controller/commands");
     this->declare_parameter<bool>("enable_visualization", false);
@@ -94,6 +96,7 @@ public:
     joint_damping_     = this->get_parameter("joint_damping").as_double();
     joint_stiffness_   = this->get_parameter("joint_stiffness").as_double();
     bearing_friction_  = this->get_parameter("bearing_friction").as_double();
+    observer_gain_     = this->get_parameter("observer_gain").as_double();
     effort_topic_      = this->get_parameter("effort_topic").as_string();
     enable_vis_        = this->get_parameter("enable_visualization").as_bool();
 
@@ -127,7 +130,25 @@ public:
       RCLCPP_INFO(this->get_logger(), "SIL mode: publishing %s (joint='%s')",
         joint_state_topic_.c_str(), joint_name_.c_str());
     } else {
-      RCLCPP_INFO(this->get_logger(), "Parallel mode: NOT publishing /joint_states");
+      // In parallel mode, subscribe to /joint_states to get the measured hardware position
+      // for the Luenberger observer correction (θ_corrected = θ_predicted + α·(θ_measured − θ_predicted))
+      measured_joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+        joint_state_topic_,
+        rclcpp::SensorDataQoS(),
+        [this](sensor_msgs::msg::JointState::ConstSharedPtr msg) {
+          for (size_t i = 0; i < msg->name.size(); ++i) {
+            if (msg->name[i] == joint_name_) {
+              if (i < msg->position.size()) {
+                measured_position_ = msg->position[i];
+                have_measured_position_ = true;
+              }
+              break;
+            }
+          }
+        });
+      RCLCPP_INFO(this->get_logger(),
+        "Parallel mode: subscribing to %s for observer correction (joint='%s', observer_gain=%.3f)",
+        joint_state_topic_.c_str(), joint_name_.c_str(), observer_gain_);
     }
 
     // --- Parameter callbacks ---
@@ -143,10 +164,10 @@ public:
     RCLCPP_INFO(
       this->get_logger(),
       "ChronoFlapNode started [sil_mode=%s]: publish=%.0f Hz, solver=%.0f Hz (%d substeps), "
-      "flap=%.3fx%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f",
+      "flap=%.3fx%.3f m / %.4f kg, damping=%.4f, stiffness=%.4f, bearing=%.4f, observer_gain=%.3f",
       sil_mode_ ? "true" : "false", rate_hz_, solver_rate_hz_, substeps_,
       flap_length_, flap_width_, flap_mass_,
-      joint_damping_, joint_stiffness_, bearing_friction_);
+      joint_damping_, joint_stiffness_, bearing_friction_, observer_gain_);
   }
 
   void run()
@@ -189,6 +210,21 @@ public:
       }
       sim_position_ = motor_link_->GetMotorAngle();
       sim_velocity_ = motor_link_->GetMotorAngleDt();
+      // Luenberger observer correction (parallel mode only):
+      //   θ_corrected = θ_predicted + α · (θ_measured − θ_predicted)
+      // This eliminates slow position drift caused by open-loop integration error
+      // while preserving the fast transient dynamics predicted by Chrono.
+      if (!sil_mode_ && have_measured_position_ && observer_gain_ > 0.0) {
+        sim_position_ += observer_gain_ * (measured_position_ - sim_position_);
+        // Feed the corrected position back into the Chrono body state so the next
+        // integration step begins from the corrected angle rather than the raw prediction.
+        const double half_len = flap_length_ / 2.0;
+        flap_->SetRot(QuatFromAngleY(sim_position_));
+        flap_->SetPos(ChVector3d(
+          half_len * std::sin(sim_position_),
+          0.0,
+          half_len * std::cos(sim_position_)));
+      }
       sim_acceleration_ = (sim_velocity_ - vel_before) / publish_dt_;
       publish_kinematics();
       // In SIL mode, publish JointState so the PID reads from us
@@ -321,6 +357,14 @@ private:
           return result;
         }
       }
+      if (param.get_name() == "observer_gain") {
+        if (param.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE
+            || param.as_double() < 0.0 || param.as_double() > 1.0) {
+          result.successful = false;
+          result.reason = "observer_gain must be a double in [0.0, 1.0].";
+          return result;
+        }
+      }
     }
     return result;
   }
@@ -334,6 +378,7 @@ private:
       else if (param.get_name() == "joint_damping")    { joint_damping_ = param.as_double(); }
       else if (param.get_name() == "joint_stiffness")  { joint_stiffness_ = param.as_double(); }
       else if (param.get_name() == "bearing_friction") { bearing_friction_ = param.as_double(); }
+      else if (param.get_name() == "observer_gain")    { observer_gain_ = param.as_double(); }
     }
     if (body_needs_update) {
       update_flap_inertia();
@@ -386,6 +431,7 @@ private:
   double      joint_damping_{0.0};
   double      joint_stiffness_{0.712441};
   double      bearing_friction_{0.005};
+  double      observer_gain_{0.05};
   std::string effort_topic_{"/motor_effort_controller/commands"};
   bool        enable_vis_{false};
   bool        vis_active_{false};
@@ -394,6 +440,9 @@ private:
   double sim_position_;
   double sim_velocity_;
   double sim_acceleration_;
+  // Observer state (parallel mode only)
+  double measured_position_{0.0};
+  bool   have_measured_position_{false};
   // Chrono objects
   std::unique_ptr<ChSystemNSC>                   sys_;
   std::shared_ptr<ChBody>                        ground_;
@@ -406,6 +455,7 @@ private:
 #endif
   // ROS interfaces
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr effort_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr     measured_joint_state_sub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr              pos_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr              vel_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr              accel_pub_;

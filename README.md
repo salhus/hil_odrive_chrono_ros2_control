@@ -28,13 +28,15 @@ velocity_pid_node ──/motor_effort_controller/commands──▶ chrono_flap_n
 
 The real ODrive owns `/joint_states` via `joint_state_broadcaster`. `chrono_flap_node` reads the same torque commands the real hardware receives but does **not** publish `/joint_states`. Simulated and measured kinematics can be compared side-by-side in PlotJuggler to validate the identified plant model.
 
+To prevent the simulated position from drifting over time (open-loop integration error), `chrono_flap_node` applies a **Luenberger observer correction** each tick: it subscribes to `/joint_states` and nudges the predicted position toward the measured position with gain `observer_gain` (default `0.05`). Set `observer_gain:=0.0` to disable the correction; see [`src/chrono_flap_sim/doc/parallel_mode_observer.md`](src/chrono_flap_sim/doc/parallel_mode_observer.md) for the theoretical basis.
+
 ```
 ODrive HW ──/joint_states──▶ velocity_pid_node ──/motor_effort_controller/commands──▶ ODrive HW
-                                                              │
-                                                              ▼
-                                                  chrono_flap_node (sil_mode=false)
-                                                  publishes ~/sim_position, ~/sim_velocity,
-                                                            ~/sim_acceleration
+               │                                               │
+               │ (measured position for observer)              ▼
+               └──────────────────────────────▶ chrono_flap_node (sil_mode=false)
+                                                publishes ~/sim_position, ~/sim_velocity,
+                                                          ~/sim_acceleration
 ```
 
 ---
@@ -377,10 +379,10 @@ chrono_flap_node (sil_mode=true) → /joint_states → velocity_pid_node → /mo
 
 ```
 ODrive HW → /joint_states → velocity_pid_node → /motor_effort_controller/commands → ODrive HW
-                                                              │
-                                                              ▼
-                                                  chrono_flap_node (sil_mode=false)
-                                                  ~/sim_position, ~/sim_velocity, ~/sim_acceleration
+               │                                               │
+               │ (measured position for observer)              ▼
+               └──────────────────────────────▶ chrono_flap_node (sil_mode=false)
+                                                ~/sim_position, ~/sim_velocity, ~/sim_acceleration
 
 ODrive axis1 (pto_joint) ← passive damping configured via odrivetool (τ = -B·ω)
 
