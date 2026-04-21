@@ -77,7 +77,7 @@ public:
     // ── Physical flap properties ─────────────────────────────────────────────────────────────
     this->declare_parameter<double>("flap_length_m", 0.30);
     this->declare_parameter<double>("flap_width_m", 0.30);
-    this->declare_parameter<double>("flap_mass_kg", 0.21);
+    this->declare_parameter<double>("flap_mass_kg", 0.197);
 
     // ── Joint dynamics ───────────────────────────────────────────────────────────────────────
     this->declare_parameter<double>("joint_damping", 0.0);
