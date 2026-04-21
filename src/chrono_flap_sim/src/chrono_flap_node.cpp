@@ -140,14 +140,10 @@ public:
     coulomb_friction_  = this->get_parameter("coulomb_friction").as_double();
     use_shadow_pid_    = this->get_parameter("use_shadow_pid").as_bool();
 
-    // shadow_sync_trajectory: forced false in SIL mode to avoid circular dependency
     shadow_sync_trajectory_ = this->get_parameter("shadow_sync_trajectory").as_bool();
-    if (sil_mode_ && shadow_sync_trajectory_) {
-      RCLCPP_WARN(this->get_logger(),
-        "shadow_sync_trajectory=true ignored in SIL mode (would create circular dependency); "
-        "forcing shadow_sync_trajectory=false.");
-      shadow_sync_trajectory_ = false;
-    }
+    // No longer force-disabled in SIL mode — shadow PID drives the plant
+    // in both modes, so syncing trajectory from velocity_pid_node is safe
+    // (velocity_pid_node's trajectory generator is not feedback-dependent).
 
     read_shadow_params();
 
@@ -182,26 +178,26 @@ public:
       // Parallel mode: publish sim joint states on a separate topic for the sim RSP / RViz overlay
       sim_joint_state_pub_ = this->create_publisher<sensor_msgs::msg::JointState>(
         "/sim_joint_states", 10);
+    }
 
-      // Subscribe to velocity_pid_node trajectory topics when shadow_sync_trajectory is active
-      if (shadow_sync_trajectory_) {
-        pos_cmd_sub_ = this->create_subscription<std_msgs::msg::Float64>(
-          "/velocity_pid_node/position_command",
-          rclcpp::SensorDataQoS(),
-          [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
-            shadow_ext_pos_ref_ = msg->data;
-            shadow_pos_ref_received_ = true;
-          });
-        vel_cmd_sub_ = this->create_subscription<std_msgs::msg::Float64>(
-          "/velocity_pid_node/velocity_command",
-          rclcpp::SensorDataQoS(),
-          [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
-            shadow_ext_vel_ref_ = msg->data;
-            shadow_vel_ref_received_ = true;
-          });
-        RCLCPP_INFO(this->get_logger(),
-          "Shadow PID will sync trajectory from /velocity_pid_node/{position,velocity}_command");
-      }
+    // Trajectory sync — works in both modes now
+    if (shadow_sync_trajectory_) {
+      pos_cmd_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+        "/velocity_pid_node/position_command",
+        rclcpp::SensorDataQoS(),
+        [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+          shadow_ext_pos_ref_ = msg->data;
+          shadow_pos_ref_received_ = true;
+        });
+      vel_cmd_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+        "/velocity_pid_node/velocity_command",
+        rclcpp::SensorDataQoS(),
+        [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+          shadow_ext_vel_ref_ = msg->data;
+          shadow_vel_ref_received_ = true;
+        });
+      RCLCPP_INFO(this->get_logger(),
+        "Shadow PID will sync trajectory from /velocity_pid_node/{position,velocity}_command");
     }
 
     // ── Parameter callbacks ───────────────────────────────────────────────────────────────────
