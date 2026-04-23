@@ -1,4 +1,5 @@
-# hil_odrive_ros2_control
+# Marine_Robotics HIL Project Chrono ROS2-Controls
+
 
 A self-contained **ROS 2 Jazzy** workspace implementing a **Wave Energy Converter (WEC) Hardware-in-the-Loop (HIL) dynamometer** test bench using two ODrive motors on a shared shaft, controlled over **SocketCAN (CAN bus)** via **ros2_control**.
 
